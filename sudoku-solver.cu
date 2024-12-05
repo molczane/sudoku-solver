@@ -38,16 +38,61 @@ __device__ bool is_valid(int *board, int row, int col, int num) {
 
 // Device function to find the next empty cell
 __device__ bool find_empty(int *board, int *row, int *col) {
+    int min_domain_size = 10; // Start with an invalid large domain size (greater than 9)
+    int best_row = -1, best_col = -1;
+
     for (int i = 0; i < 9; i++) {
         for (int j = 0; j < 9; j++) {
-            if (board[i * 9 + j] == 0) {
-                *row = i;
-                *col = j;
-                return true;
+            if (board[i * 9 + j] == 0) { // Check only empty cells
+                uint16_t domain = 0x1FF; // All values (1–9) initially possible (bitmask: 111111111)
+
+                // Eliminate values already present in the row
+                for (int k = 0; k < 9; k++) {
+                    if (board[i * 9 + k] > 0) {
+                        domain &= ~(1 << (board[i * 9 + k] - 1));
+                    }
+                }
+
+                // Eliminate values already present in the column
+                for (int k = 0; k < 9; k++) {
+                    if (board[k * 9 + j] > 0) {
+                        domain &= ~(1 << (board[k * 9 + j] - 1));
+                    }
+                }
+
+                // Eliminate values already present in the 3x3 sub-grid
+                int subgrid_row_start = (i / 3) * 3;
+                int subgrid_col_start = (j / 3) * 3;
+                for (int a = 0; a < 3; a++) {
+                    for (int b = 0; b < 3; b++) {
+                        int value = board[(subgrid_row_start + a) * 9 + (subgrid_col_start + b)];
+                        if (value > 0) {
+                            domain &= ~(1 << (value - 1));
+                        }
+                    }
+                }
+
+                // Count the number of remaining possibilities
+                int domain_size = __popc(domain); // Count set bits in the domain bitmask
+
+                // Update the MRV cell if this domain is smaller
+                if (domain_size > 0 && domain_size < min_domain_size) {
+                    min_domain_size = domain_size;
+                    best_row = i;
+                    best_col = j;
+                }
             }
         }
     }
-    return false;
+
+    // If no valid cell is found, return false
+    if (best_row == -1 || best_col == -1) {
+        return false;
+    }
+
+    *row = best_row;
+    *col = best_col;
+    return true;
 }
 
 __device__ uint16_t calculate_domain(int *board, int row, int col) {
