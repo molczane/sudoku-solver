@@ -50,107 +50,122 @@ __device__ bool find_empty(int *board, int *row, int *col) {
     return false;
 }
 
-// Explicit backtracking implementation for solving Sudoku
-__device__ bool solve(int *board) {
-    uint16_t possible[GRID_SIZE];  // Bitmask for possible values of each cell
-    int stack[GRID_SIZE][3];       // Stack for backtracking: [cell index, bitmask, last value tried]
-    int top = -1;
+__device__ uint16_t calculate_domain(int *board, int row, int col) {
+    uint16_t domain = 0x1FF; // All values (1–9) initially possible
 
-    // Initialize possible values for each cell
-    for (int i = 0; i < GRID_SIZE; i++) {
-        if (board[i] == 0) {
-            int row = i / 9;
-            int col = i % 9;
-            int subgrid = (row / 3) * 3 + (col / 3);
+    // Remove values present in the row, column, and subgrid
+    for (int i = 0; i < 9; i++) {
+        if (board[row * 9 + i] > 0) domain &= ~(1 << (board[row * 9 + i] - 1));
+        if (board[i * 9 + col] > 0) domain &= ~(1 << (board[i * 9 + col] - 1));
+    }
 
-            // Start with all numbers (1–9) as possible
-            possible[i] = 0x1FF;
-
-            // Remove numbers already present in the row, column, or subgrid
-            for (int j = 0; j < 9; j++) {
-                int val_row = board[row * 9 + j];
-                int val_col = board[j * 9 + col];
-                int val_subgrid = board[(subgrid / 3) * 27 + (subgrid % 3) * 3 + (j / 3) * 9 + (j % 3)];
-                if (val_row > 0) possible[i] &= ~(1 << (val_row - 1));
-                if (val_col > 0) possible[i] &= ~(1 << (val_col - 1));
-                if (val_subgrid > 0) possible[i] &= ~(1 << (val_subgrid - 1));
-            }
-        } else {
-            possible[i] = 0;  // Filled cells have no possibilities
+    int subgrid_row = (row / 3) * 3;
+    int subgrid_col = (col / 3) * 3;
+    for (int i = subgrid_row; i < subgrid_row + 3; i++) {
+        for (int j = subgrid_col; j < subgrid_col + 3; j++) {
+            if (board[i * 9 + j] > 0) domain &= ~(1 << (board[i * 9 + j] - 1));
         }
     }
 
-    // Backtracking loop
-    while (true) {
-        // Find the cell with the least number of possible values (MRV heuristic)
-        int min_index = -1;
-        int min_count = 10; // More than the maximum possible (9)
+    return domain;
+}
 
-        for (int i = 0; i < GRID_SIZE; i++) {
-            if (board[i] == 0) {
-                int count = __popc(possible[i]); // Count set bits in the bitmask
-                if (count > 0 && count < min_count) {
-                    min_count = count;
-                    min_index = i;
-                }
+__device__ bool is_solved(int *board) {
+    for (int i = 0; i < GRID_SIZE; i++) {
+        if (board[i] == 0) return false;
+    }
+    return true;
+}
+
+__device__ int find_mrv_cell(int *board, uint16_t *domains) {
+    int min_index = -1;
+    int min_count = 10; // More than the maximum domain size (9)
+
+    for (int i = 0; i < GRID_SIZE; i++) {
+        if (board[i] == 0) { // Unfilled cell
+            int count = __popc(domains[i]); // Count set bits in the domain
+            if (count > 0 && count < min_count) {
+                min_count = count;
+                min_index = i;
             }
         }
+    }
 
-        // If no cell is left, the board is solved
-        if (min_index == -1) return true;
+    return min_index;
+}
 
-        // Get the possible values for the selected cell
-        uint16_t mask = possible[min_index];
-        int row = min_index / 9;
-        int col = min_index % 9;
-        int subgrid = (row / 3) * 3 + (col / 3);
+__device__ bool solve_with_mrv(int *board) {
+    uint16_t domains[GRID_SIZE];
 
-        // Push the cell onto the stack for backtracking
-        stack[++top][0] = min_index;
-        stack[top][1] = mask;
-        stack[top][2] = 0;  // Start with the first possible value
+    // Initialize domains for all cells
+    for (int i = 0; i < GRID_SIZE; i++) {
+        int row = i / 9;
+        int col = i % 9;
+        domains[i] = (board[i] == 0) ? calculate_domain(board, row, col) : 0;
+    }
+
+    int stack[GRID_SIZE][3]; // [cell index, domain, last tried value]
+    int top = -1;
+
+    while (true) {
+        if (is_solved(board)) return true;
+
+        // Find the MRV cell
+        int cell = find_mrv_cell(board, domains);
+        if (cell == -1) return false; // No solution
+
+        uint16_t domain = domains[cell];
+        int row = cell / 9;
+        int col = cell % 9;
+
+        stack[++top][0] = cell;
+        stack[top][1] = domain;
+        stack[top][2] = 0;
 
         while (top >= 0) {
-            int cell = stack[top][0];
-            mask = stack[top][1];
+            cell = stack[top][0];
+            domain = stack[top][1];
             int last_value = stack[top][2];
 
-            // Find the next possible value for the cell
+            // Find the next possible value
             int next_value = -1;
             for (int num = last_value + 1; num <= 9; num++) {
-                if (mask & (1 << (num - 1))) {
+                if (domain & (1 << (num - 1))) {
                     next_value = num;
                     break;
                 }
             }
 
             if (next_value == -1) {
-                // No more possible values, backtrack
+                // Backtrack
                 board[cell] = 0;
-                possible[cell] = stack[top--][1]; // Restore possibilities
-            } else {
-                // Place the value in the cell
-                board[cell] = next_value;
-                stack[top][2] = next_value;
-
-                // Update constraints dynamically
-                uint16_t bit = 1 << (next_value - 1);
-                for (int j = 0; j < 9; j++) {
-                    int row_cell = row * 9 + j;
-                    int col_cell = j * 9 + col;
-                    int subgrid_cell = (subgrid / 3) * 27 + (subgrid % 3) * 3 + (j / 3) * 9 + (j % 3);
-                    possible[row_cell] &= ~bit;
-                    possible[col_cell] &= ~bit;
-                    possible[subgrid_cell] &= ~bit;
-                }
-
-                // Move to the next empty cell
-                break;
+                domains[cell] = stack[top--][1]; // Restore domain
+                continue;
             }
+
+            // Place the value
+            board[cell] = next_value;
+            stack[top][2] = next_value;
+
+            // Update domains dynamically
+            uint16_t bit = 1 << (next_value - 1);
+            for (int i = 0; i < 9; i++) {
+                domains[row * 9 + i] &= ~bit;
+                domains[i * 9 + col] &= ~bit;
+            }
+
+            int subgrid_row = (row / 3) * 3;
+            int subgrid_col = (col / 3) * 3;
+            for (int i = subgrid_row; i < subgrid_row + 3; i++) {
+                for (int j = subgrid_col; j < subgrid_col + 3; j++) {
+                    domains[i * 9 + j] &= ~bit;
+                }
+            }
+
+            break;
         }
 
-        // If the stack is empty and no solution is found, the puzzle is unsolvable
-        if (top < 0) return false;
+        if (top < 0) return false; // Unsolvable
     }
 }
 
@@ -160,7 +175,7 @@ __global__ void solve_sudokus(int *boards, int num_boards) {
 
     if (idx < num_boards) {
         int *board = boards + idx * GRID_SIZE;
-        if (solve(board)) {
+        if (solve_with_mrv(board)) {
             printf("Puzzle %d solved successfully.\n", idx);
         } else {
             printf("Puzzle %d is unsolvable.\n", idx);
