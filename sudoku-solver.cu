@@ -1,6 +1,7 @@
 #include <cuda_runtime.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 #define GRID_SIZE 81
 #define THREADS_PER_BLOCK 1
@@ -51,8 +52,8 @@ __device__ bool find_empty(int *board, int *row, int *col) {
 
 // Explicit backtracking implementation for solving Sudoku
 __device__ bool solve(int *board) {
-    int possible[GRID_SIZE]; // Bitmask for possible values of each cell
-    int stack[GRID_SIZE][3];      // Stack for backtracking: [cell index, bitmask, last value tried]
+    uint16_t possible[GRID_SIZE];  // Bitmask for possible values of each cell
+    int stack[GRID_SIZE][3];       // Stack for backtracking: [cell index, bitmask, last value tried]
     int top = -1;
 
     // Initialize possible values for each cell
@@ -75,7 +76,7 @@ __device__ bool solve(int *board) {
                 if (val_subgrid > 0) possible[i] &= ~(1 << (val_subgrid - 1));
             }
         } else {
-            possible[i] = 0; // Filled cells have no possibilities
+            possible[i] = 0;  // Filled cells have no possibilities
         }
     }
 
@@ -99,7 +100,7 @@ __device__ bool solve(int *board) {
         if (min_index == -1) return true;
 
         // Get the possible values for the selected cell
-        int mask = possible[min_index];
+        uint16_t mask = possible[min_index];
         int row = min_index / 9;
         int col = min_index % 9;
         int subgrid = (row / 3) * 3 + (col / 3);
@@ -107,7 +108,7 @@ __device__ bool solve(int *board) {
         // Push the cell onto the stack for backtracking
         stack[++top][0] = min_index;
         stack[top][1] = mask;
-        stack[top][2] = 0; // Start with the first possible value
+        stack[top][2] = 0;  // Start with the first possible value
 
         while (top >= 0) {
             int cell = stack[top][0];
@@ -133,7 +134,7 @@ __device__ bool solve(int *board) {
                 stack[top][2] = next_value;
 
                 // Update constraints dynamically
-                int bit = 1 << (next_value - 1);
+                uint16_t bit = 1 << (next_value - 1);
                 for (int j = 0; j < 9; j++) {
                     int row_cell = row * 9 + j;
                     int col_cell = j * 9 + col;
@@ -181,7 +182,7 @@ void print_board(int *board) {
 int main() {
     const int num_boards = 13;
 int boards[num_boards][GRID_SIZE] = {
-    {9, 0, 0, 0, 1, 5, 0, 0, 0, 0, 0, 1, 4, 8, 0, 0, 5, 9, 3, 4, 0, 0, 0, 6, 2, 1, 0, 4, 0, 6, 5, 1, 0, 8, 3, 2, 0, 2, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 6, 2, 8, 0, 0, 1, 0, 0, 0, 0, 0, 7, 0, 0, 4, 2, 0, 0, 9, 0, 0, 5, 8, 0, 0, 0, 0, 0, 4, 1, 9, 0, 0},
+    {9, 0, 0, 0, 3, 5, 0, 0, 0, 0, 0, 1, 4, 8, 0, 0, 5, 9, 3, 4, 0, 0, 0, 6, 2, 1, 0, 4, 0, 6, 5, 1, 0, 8, 3, 2, 0, 2, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 6, 2, 8, 0, 0, 1, 0, 0, 0, 0, 0, 7, 0, 0, 4, 2, 0, 0, 9, 0, 0, 5, 8, 0, 0, 0, 0, 0, 4, 1, 9, 0, 0},
     {0, 7, 0, 0, 0, 2, 5, 0, 9, 5, 8, 0, 3, 4, 0, 0, 0, 0, 2, 0, 1, 5, 0, 9, 0, 0, 8, 1, 0, 3, 0, 0, 0, 0, 5, 0, 9, 5, 6, 0, 3, 0, 0, 7, 1, 7, 2, 8, 0, 5, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 4, 4, 0, 0, 0, 0, 0, 6, 0, 5, 3, 1, 5, 4, 6, 0, 0, 0, 2},
     {8, 9, 3, 1, 4, 0, 0, 0, 0, 4, 2, 0, 3, 7, 5, 8, 1, 0, 1, 5, 0, 0, 9, 0, 2, 0, 0, 2, 0, 0, 0, 6, 7, 0, 9, 8, 0, 0, 0, 0, 3, 1, 0, 0, 0, 3, 8, 0, 5, 2, 9, 0, 7, 0, 0, 0, 1, 0, 0, 4, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 8, 0, 1, 0, 0},
     {0, 7, 0, 1, 0, 2, 0, 6, 0, 2, 0, 0, 5, 0, 0, 0, 3, 9, 0, 5, 0, 9, 0, 0, 1, 4, 0, 0, 3, 0, 4, 0, 5, 6, 8, 0, 0, 8, 5, 0, 7, 1, 0, 9, 0, 0, 0, 0, 3, 0, 0, 4, 5, 0, 7, 6, 3, 0, 0, 4, 0, 0, 0, 0, 0, 0, 7, 0, 3, 8, 1, 6, 0, 9, 0, 2, 5, 0, 3, 7, 0},
