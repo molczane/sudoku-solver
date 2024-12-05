@@ -51,44 +51,106 @@ __device__ bool find_empty(int *board, int *row, int *col) {
 
 // Explicit backtracking implementation for solving Sudoku
 __device__ bool solve(int *board) {
-    int stack[GRID_SIZE][2];
+    int possible[GRID_SIZE]; // Bitmask for possible values of each cell
+    int stack[GRID_SIZE][3];      // Stack for backtracking: [cell index, bitmask, last value tried]
     int top = -1;
-    int row, col;
 
-    if (!find_empty(board, &row, &col)) {
-        return true; // No empty cells, puzzle solved
+    // Initialize possible values for each cell
+    for (int i = 0; i < GRID_SIZE; i++) {
+        if (board[i] == 0) {
+            int row = i / 9;
+            int col = i % 9;
+            int subgrid = (row / 3) * 3 + (col / 3);
+
+            // Start with all numbers (1–9) as possible
+            possible[i] = 0x1FF;
+
+            // Remove numbers already present in the row, column, or subgrid
+            for (int j = 0; j < 9; j++) {
+                int val_row = board[row * 9 + j];
+                int val_col = board[j * 9 + col];
+                int val_subgrid = board[(subgrid / 3) * 27 + (subgrid % 3) * 3 + (j / 3) * 9 + (j % 3)];
+                if (val_row > 0) possible[i] &= ~(1 << (val_row - 1));
+                if (val_col > 0) possible[i] &= ~(1 << (val_col - 1));
+                if (val_subgrid > 0) possible[i] &= ~(1 << (val_subgrid - 1));
+            }
+        } else {
+            possible[i] = 0; // Filled cells have no possibilities
+        }
     }
 
-    stack[++top][0] = row;
-    stack[top][1] = col;
+    // Backtracking loop
+    while (true) {
+        // Find the cell with the least number of possible values (MRV heuristic)
+        int min_index = -1;
+        int min_count = 10; // More than the maximum possible (9)
 
-    while (top >= 0) {
-        row = stack[top][0];
-        col = stack[top][1];
+        for (int i = 0; i < GRID_SIZE; i++) {
+            if (board[i] == 0) {
+                int count = __popc(possible[i]); // Count set bits in the bitmask
+                if (count > 0 && count < min_count) {
+                    min_count = count;
+                    min_index = i;
+                }
+            }
+        }
 
-        bool placed = false;
-        for (int num = board[row * 9 + col] + 1; num <= 9; num++) {
-            if (is_valid(board, row, col, num)) {
-                board[row * 9 + col] = num;
-                placed = true;
+        // If no cell is left, the board is solved
+        if (min_index == -1) return true;
+
+        // Get the possible values for the selected cell
+        int mask = possible[min_index];
+        int row = min_index / 9;
+        int col = min_index % 9;
+        int subgrid = (row / 3) * 3 + (col / 3);
+
+        // Push the cell onto the stack for backtracking
+        stack[++top][0] = min_index;
+        stack[top][1] = mask;
+        stack[top][2] = 0; // Start with the first possible value
+
+        while (top >= 0) {
+            int cell = stack[top][0];
+            mask = stack[top][1];
+            int last_value = stack[top][2];
+
+            // Find the next possible value for the cell
+            int next_value = -1;
+            for (int num = last_value + 1; num <= 9; num++) {
+                if (mask & (1 << (num - 1))) {
+                    next_value = num;
+                    break;
+                }
+            }
+
+            if (next_value == -1) {
+                // No more possible values, backtrack
+                board[cell] = 0;
+                possible[cell] = stack[top--][1]; // Restore possibilities
+            } else {
+                // Place the value in the cell
+                board[cell] = next_value;
+                stack[top][2] = next_value;
+
+                // Update constraints dynamically
+                int bit = 1 << (next_value - 1);
+                for (int j = 0; j < 9; j++) {
+                    int row_cell = row * 9 + j;
+                    int col_cell = j * 9 + col;
+                    int subgrid_cell = (subgrid / 3) * 27 + (subgrid % 3) * 3 + (j / 3) * 9 + (j % 3);
+                    possible[row_cell] &= ~bit;
+                    possible[col_cell] &= ~bit;
+                    possible[subgrid_cell] &= ~bit;
+                }
+
+                // Move to the next empty cell
                 break;
             }
         }
 
-        if (placed) {
-            if (find_empty(board, &row, &col)) {
-                stack[++top][0] = row;
-                stack[top][1] = col;
-            } else {
-                return true; // Solved
-            }
-        } else {
-            board[stack[top][0] * 9 + stack[top][1]] = 0; // Reset cell
-            top--; // Backtrack
-        }
+        // If the stack is empty and no solution is found, the puzzle is unsolvable
+        if (top < 0) return false;
     }
-
-    return false; // Unsolvable
 }
 
 // Kernel for solving multiple Sudoku puzzles in parallel
