@@ -3,164 +3,180 @@
 #include <stdbool.h>
 
 #define GRID_SIZE 81
-#define THREADS_PER_BLOCK 1
+#define THREADS_PER_BLOCK 81 // one thread per cell
 
-// Helper function to check if placing a number is valid
-__device__ bool is_valid(int *board, int row, int col, int num) {
-    // Check the row
-    for (int i = 0; i < 9; i++) {
-        if (board[row * 9 + i] == num) {
-            return false;
+__device__ bool parallel_is_valid(int *board, int row, int col, int num) {
+    __shared__ bool conflict;
+    // Initialize
+    if (threadIdx.x == 0) conflict = false;
+    __syncthreads();
+
+    int tid = threadIdx.x;
+
+    // The puzzle:
+    // Row check: threads 0..8 each check one cell in the row
+    // Col check: threads 9..17 check one cell in the column
+    // Box check: threads 18..26 check one cell in the box
+    // The rest of the threads do nothing for simplicity
+
+    // Row check
+    if (tid < 9) {
+        int val = board[row * 9 + tid];
+        if (val == num) {
+            atomicExch((int*)&conflict, true);
         }
     }
 
-    // Check the column
-    for (int i = 0; i < 9; i++) {
-        if (board[i * 9 + col] == num) {
-            return false;
+    // Column check
+    if (tid >= 9 && tid < 18) {
+        int c_tid = tid - 9;
+        int val = board[c_tid * 9 + col];
+        if (val == num) {
+            atomicExch((int*)&conflict, true);
         }
     }
 
-    // Check the 3x3 sub-grid
-    int box_row_start = (row / 3) * 3;
-    int box_col_start = (col / 3) * 3;
-    for (int i = box_row_start; i < box_row_start + 3; i++) {
-        for (int j = box_col_start; j < box_col_start + 3; j++) {
-            if (board[i * 9 + j] == num) {
-                return false;
-            }
+    // Box check
+    if (tid >= 18 && tid < 27) {
+        int b_tid = tid - 18;
+        int box_row_start = (row / 3) * 3;
+        int box_col_start = (col / 3) * 3;
+        int r = box_row_start + b_tid / 3;
+        int c = box_col_start + b_tid % 3;
+        int val = board[r * 9 + c];
+        if (val == num) {
+            atomicExch((int*)&conflict, true);
         }
     }
 
-    return true;
+    __syncthreads();
+    // Only thread 0 returns the result
+    bool result = true;
+    if (threadIdx.x == 0) {
+        result = !conflict;
+    }
+    __syncthreads();
+    return result;
 }
 
-// Device function to find the next empty cell using MRV heuristic
-// Returns true if an MRV cell is found.
-// Returns false if no empty cells (puzzle solved) or no suitable cell (no solution).
-// If it returns false and sets row=-1,col=-1, it means no solution from this configuration.
+// Device function to find the next empty cell
+// Only thread 0 will do this, others just wait
 __device__ bool find_empty(int *board, int *row, int *col) {
-    int best_domain_size = 10; // domain size can't exceed 9, start with invalid large number
-    int best_row = -1;
-    int best_col = -1;
-    bool found_empty = false;
-    bool all_zero_domains = true;
-
-    for (int i = 0; i < 9; i++) {
-        for (int j = 0; j < 9; j++) {
-            if (board[i * 9 + j] == 0) {
-                found_empty = true;
-                // Count domain size
-                int domain_size = 0;
-                for (int num = 1; num <= 9; num++) {
-                    if (is_valid(board, i, j, num)) {
-                        domain_size++;
-                    }
-                }
-                if (domain_size > 0) {
-                    all_zero_domains = false;
-                    if (domain_size < best_domain_size) {
-                        best_domain_size = domain_size;
-                        best_row = i;
-                        best_col = j;
-                    }
+    if (threadIdx.x == 0) {
+        for (int i = 0; i < 9; i++) {
+            for (int j = 0; j < 9; j++) {
+                if (board[i * 9 + j] == 0) {
+                    *row = i;
+                    *col = j;
+                    return true;
                 }
             }
         }
     }
-
-    if (!found_empty) {
-        // No empty cell means puzzle is solved
-        return false;
-    }
-
-    if (all_zero_domains) {
-        // Every empty cell has zero possibilities => no solution from this configuration
-        *row = -1;
-        *col = -1;
-        return false;
-    }
-
-    // We found a suitable MRV cell
-    *row = best_row;
-    *col = best_col;
-    return true;
+    __syncthreads();
+    // If thread 0 didn't find anything, no empty cell
+    if (threadIdx.x == 0) return false;
+    // Non-zero threads just return after sync
+    return false;
 }
 
 // Explicit backtracking implementation for solving Sudoku
+// Only thread 0 will run the backtracking logic, others are helpers for is_valid checks
 __device__ bool solve(int *board) {
-    int stack[GRID_SIZE][2];
-    int top = -1;
+    __shared__ int stack[GRID_SIZE][2];
+    __shared__ int top;
+    if (threadIdx.x == 0) top = -1;
+    __syncthreads();
+
     int row, col;
 
-    if (!find_empty(board, &row, &col)) {
-        // If no cell found and row,col != (-1,-1), puzzle is solved
-        if (row == -1 && col == -1) {
-            // row = -1 and col = -1 means no solution from this config
-            return false;
-        } else {
-            return true; // solved
+    if (threadIdx.x == 0) {
+        if (!find_empty(board, &row, &col)) {
+            // no empty cell => solved
         }
     }
+    __syncthreads();
 
-    // We have an MRV cell at (row, col)
-    stack[++top][0] = row;
-    stack[top][1] = col;
+    // If no empty cell found by thread 0
+    bool no_empty;
+    if (threadIdx.x == 0) no_empty = !find_empty(board, &row, &col);
+    __syncthreads();
 
-    while (top >= 0) {
-        row = stack[top][0];
-        col = stack[top][1];
+    if (no_empty && threadIdx.x == 0) return true; // solved
 
-        bool placed = false;
-        int start_val = board[row * 9 + col]; 
-        for (int num = start_val + 1; num <= 9; num++) {
-            if (is_valid(board, row, col, num)) {
-                board[row * 9 + col] = num;
-                placed = true;
-                break;
+    // If empty cell found, push on stack
+    if (threadIdx.x == 0) {
+        stack[++top][0] = row;
+        stack[top][1] = col;
+    }
+    __syncthreads();
+
+    while (true) {
+        if (threadIdx.x == 0) {
+            if (top < 0) {
+                // No solution
             }
         }
+        __syncthreads();
 
-        if (placed) {
-            if (!find_empty(board, &row, &col)) {
-                // If no cell found
-                if (row == -1 && col == -1) {
-                    // no solution from this branch
-                    // restore this cell and backtrack
-                    board[stack[top][0] * 9 + stack[top][1]] = 0;
-                    top--;
+        if (threadIdx.x == 0 && top < 0) return false; // no solution
+
+        if (threadIdx.x == 0) {
+            row = stack[top][0];
+            col = stack[top][1];
+
+            bool placed = false;
+            int start_val = board[row * 9 + col];
+            for (int num = start_val + 1; num <= 9; num++) {
+                __syncthreads(); // ensure all threads ready
+                bool valid = parallel_is_valid(board, row, col, num);
+                __syncthreads();
+                if (threadIdx.x == 0 && valid) {
+                    board[row * 9 + col] = num;
+                    placed = true;
+                    break;
+                }
+            }
+
+            if (placed) {
+                // find next empty cell
+                if (!find_empty(board, &row, &col)) {
+                    // no empty => solved
+                    // break loop
+                    top = -999; // special code to indicate done
                 } else {
-                    // puzzle solved
-                    return true;
+                    stack[++top][0] = row;
+                    stack[top][1] = col;
                 }
             } else {
-                stack[++top][0] = row;
-                stack[top][1] = col;
+                // reset cell and backtrack
+                board[row * 9 + col] = 0;
+                top--;
             }
-        } else {
-            // Reset this cell and backtrack
-            board[stack[top][0] * 9 + stack[top][1]] = 0;
-            top--;
         }
+
+        __syncthreads();
+        if (threadIdx.x == 0 && top == -999) return true; // solved
+        __syncthreads();
     }
-    return false; // unsolvable
+
+    // unreachable
+    return false;
 }
 
 // Kernel for solving multiple Sudoku puzzles in parallel
 __global__ void solve_sudokus(int *boards, int num_boards) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-
-    if (idx < num_boards) {
-        int *board = boards + idx * GRID_SIZE;
-        if (solve(board)) {
-            printf("Puzzle %d solved successfully.\n", idx);
-        } else {
-            printf("Puzzle %d is unsolvable.\n", idx);
-        }
+    int puzzle_idx = blockIdx.x;
+    int *board = boards + puzzle_idx * GRID_SIZE;
+    bool result = solve(board);
+    if (threadIdx.x == 0) {
+        if (result)
+            printf("Puzzle %d solved successfully.\n", puzzle_idx);
+        else
+            printf("Puzzle %d is unsolvable.\n", puzzle_idx);
     }
 }
 
-// Host function for printing a Sudoku board
 void print_board(int *board) {
     for (int i = 0; i < 9; i++) {
         if (i % 3 == 0 && i != 0) {
@@ -176,40 +192,49 @@ void print_board(int *board) {
     }
 }
 
-// Host code for managing CUDA memory and invoking the kernel
 int main() {
     const int num_boards = 2;
     int boards[num_boards][GRID_SIZE] = {
-        {9, 0, 0, 0, 3, 5, 0, 0, 0, 0, 0, 1, 4, 8, 0, 0, 5, 9, 3, 4, 0, 0, 0, 6, 2, 1, 0, 4, 0, 6, 5, 1, 0, 8, 3, 2, 0, 2, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 6, 2, 8, 0, 0, 1, 0, 0, 0, 0, 0, 7, 0, 0, 4, 2, 0, 0, 9, 0, 0, 5, 8, 0, 0, 0, 0, 0, 4, 1, 9, 0, 0},
-        // ... add other puzzles ...
-        {4, 0, 0, 0, 0, 0, 8, 0, 5, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 8, 0, 4, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 6, 0, 3, 0, 7, 0, 5, 0, 0, 2, 0, 0, 0, 0, 0, 0, 1, 0, 4, 0, 0, 0, 0, 0}
+        {9, 0, 0, 0, 3, 5, 0, 0, 0,
+         0, 0, 1, 4, 8, 0, 0, 5, 9,
+         3, 4, 0, 0, 0, 6, 2, 1, 0,
+         4, 0, 6, 5, 1, 0, 8, 3, 2,
+         0, 2, 0, 0, 0, 0, 6, 0, 0,
+         0, 0, 0, 0, 0, 6, 2, 8, 0,
+         0, 1, 0, 0, 0, 0, 0, 7, 0,
+         0, 4, 2, 0, 0, 9, 0, 0, 5,
+         8, 0, 0, 0, 0, 0, 4, 1, 9
+        },
+        // ... other puzzles ...
+        {4, 0, 0, 0, 0, 0, 8, 0, 5,
+         0, 3, 0, 0, 0, 0, 0, 0, 0,
+         0, 0, 0, 0, 0, 7, 0, 0, 0,
+         0, 0, 0, 0, 0, 0, 2, 0, 0,
+         0, 0, 0, 0, 0, 6, 0, 0, 0,
+         0, 0, 0, 8, 0, 4, 0, 0, 0,
+         0, 0, 0, 1, 0, 0, 0, 0, 0,
+         0, 0, 0, 0, 0, 6, 0, 3, 0,
+         0, 7, 0, 5, 0, 0, 2, 0, 0
+        }
     };
 
     int *d_boards;
     size_t size = num_boards * GRID_SIZE * sizeof(int);
-
-    // Allocate device memory
     cudaMalloc(&d_boards, size);
-
-    // Copy boards to device memory
     cudaMemcpy(d_boards, boards, size, cudaMemcpyHostToDevice);
 
-    // Launch the kernel
-    solve_sudokus<<<num_boards, THREADS_PER_BLOCK>>>(d_boards, num_boards);
+    // Launch one block per puzzle, 81 threads per block
+    solve_sudokus<<<num_boards, THREADS_PER_BLOCK * 81>>>(d_boards, num_boards);
     cudaDeviceSynchronize();
 
-    // Copy results back to host
     cudaMemcpy(boards, d_boards, size, cudaMemcpyDeviceToHost);
 
-    // Print the solved boards
-    for(int i = 0; i < num_boards; i++) {
+    for (int i = 0; i < num_boards; i++) {
         printf("Solved Board %d:\n", i);
         print_board(boards[i]);
         printf("\n");
     }
 
-    // Free device memory
     cudaFree(d_boards);
-
     return 0;
 }
