@@ -1,7 +1,6 @@
 #include <cuda_runtime.h>
 #include <stdio.h>
 #include <stdbool.h>
-#include <stdint.h>
 
 #define GRID_SIZE 81
 #define THREADS_PER_BLOCK 1
@@ -36,60 +35,53 @@ __device__ bool is_valid(int *board, int row, int col, int num) {
     return true;
 }
 
-// Device function to find the next empty cell
+// Device function to find the next empty cell using MRV heuristic
+// Returns true if an MRV cell is found.
+// Returns false if no empty cells (puzzle solved) or no suitable cell (no solution).
+// If it returns false and sets row=-1,col=-1, it means no solution from this configuration.
 __device__ bool find_empty(int *board, int *row, int *col) {
-    int min_domain_size = 10; // Start with an invalid large domain size (greater than 9)
-    int best_row = -1, best_col = -1;
+    int best_domain_size = 10; // domain size can't exceed 9, start with invalid large number
+    int best_row = -1;
+    int best_col = -1;
+    bool found_empty = false;
+    bool all_zero_domains = true;
 
     for (int i = 0; i < 9; i++) {
         for (int j = 0; j < 9; j++) {
-            if (board[i * 9 + j] == 0) { // Check only empty cells
-                uint16_t domain = 0x1FF; // All values (1–9) initially possible (bitmask: 111111111)
-
-                // Eliminate values already present in the row
-                for (int k = 0; k < 9; k++) {
-                    if (board[i * 9 + k] > 0) {
-                        domain &= ~(1 << (board[i * 9 + k] - 1));
+            if (board[i * 9 + j] == 0) {
+                found_empty = true;
+                // Count domain size
+                int domain_size = 0;
+                for (int num = 1; num <= 9; num++) {
+                    if (is_valid(board, i, j, num)) {
+                        domain_size++;
                     }
                 }
-
-                // Eliminate values already present in the column
-                for (int k = 0; k < 9; k++) {
-                    if (board[k * 9 + j] > 0) {
-                        domain &= ~(1 << (board[k * 9 + j] - 1));
+                if (domain_size > 0) {
+                    all_zero_domains = false;
+                    if (domain_size < best_domain_size) {
+                        best_domain_size = domain_size;
+                        best_row = i;
+                        best_col = j;
                     }
-                }
-
-                // Eliminate values already present in the 3x3 sub-grid
-                int subgrid_row_start = (i / 3) * 3;
-                int subgrid_col_start = (j / 3) * 3;
-                for (int a = 0; a < 3; a++) {
-                    for (int b = 0; b < 3; b++) {
-                        int value = board[(subgrid_row_start + a) * 9 + (subgrid_col_start + b)];
-                        if (value > 0) {
-                            domain &= ~(1 << (value - 1));
-                        }
-                    }
-                }
-
-                // Count the number of remaining possibilities
-                int domain_size = __popc(domain); // Count set bits in the domain bitmask
-
-                // Update the MRV cell if this domain is smaller
-                if (domain_size > 0 && domain_size < min_domain_size) {
-                    min_domain_size = domain_size;
-                    best_row = i;
-                    best_col = j;
                 }
             }
         }
     }
 
-    // If no valid cell is found, return false
-    if (best_row == -1 || best_col == -1) {
+    if (!found_empty) {
+        // No empty cell means puzzle is solved
         return false;
     }
 
+    if (all_zero_domains) {
+        // Every empty cell has zero possibilities => no solution from this configuration
+        *row = -1;
+        *col = -1;
+        return false;
+    }
+
+    // We found a suitable MRV cell
     *row = best_row;
     *col = best_col;
     return true;
@@ -102,9 +94,16 @@ __device__ bool solve(int *board) {
     int row, col;
 
     if (!find_empty(board, &row, &col)) {
-        return true; // No empty cells, puzzle solved
+        // If no cell found and row,col != (-1,-1), puzzle is solved
+        if (row == -1 && col == -1) {
+            // row = -1 and col = -1 means no solution from this config
+            return false;
+        } else {
+            return true; // solved
+        }
     }
 
+    // We have an MRV cell at (row, col)
     stack[++top][0] = row;
     stack[top][1] = col;
 
@@ -113,7 +112,8 @@ __device__ bool solve(int *board) {
         col = stack[top][1];
 
         bool placed = false;
-        for (int num = board[row * 9 + col] + 1; num <= 9; num++) {
+        int start_val = board[row * 9 + col]; 
+        for (int num = start_val + 1; num <= 9; num++) {
             if (is_valid(board, row, col, num)) {
                 board[row * 9 + col] = num;
                 placed = true;
@@ -122,19 +122,28 @@ __device__ bool solve(int *board) {
         }
 
         if (placed) {
-            if (find_empty(board, &row, &col)) {
+            if (!find_empty(board, &row, &col)) {
+                // If no cell found
+                if (row == -1 && col == -1) {
+                    // no solution from this branch
+                    // restore this cell and backtrack
+                    board[stack[top][0] * 9 + stack[top][1]] = 0;
+                    top--;
+                } else {
+                    // puzzle solved
+                    return true;
+                }
+            } else {
                 stack[++top][0] = row;
                 stack[top][1] = col;
-            } else {
-                return true; // Solved
             }
         } else {
-            board[stack[top][0] * 9 + stack[top][1]] = 0; // Reset cell
-            top--; // Backtrack
+            // Reset this cell and backtrack
+            board[stack[top][0] * 9 + stack[top][1]] = 0;
+            top--;
         }
     }
-
-    return false; // Unsolvable
+    return false; // unsolvable
 }
 
 // Kernel for solving multiple Sudoku puzzles in parallel
@@ -154,7 +163,13 @@ __global__ void solve_sudokus(int *boards, int num_boards) {
 // Host function for printing a Sudoku board
 void print_board(int *board) {
     for (int i = 0; i < 9; i++) {
+        if (i % 3 == 0 && i != 0) {
+            printf("---------------------\n");
+        }
         for (int j = 0; j < 9; j++) {
+            if (j % 3 == 0 && j != 0) {
+                printf("| ");
+            }
             printf("%d ", board[i * 9 + j]);
         }
         printf("\n");
@@ -163,30 +178,12 @@ void print_board(int *board) {
 
 // Host code for managing CUDA memory and invoking the kernel
 int main() {
-    const int num_boards = 20;
-int boards[num_boards][GRID_SIZE] = {
-    {9, 0, 0, 0, 3, 5, 0, 0, 0, 0, 0, 1, 4, 8, 0, 0, 5, 9, 3, 4, 0, 0, 0, 6, 2, 1, 0, 4, 0, 6, 5, 1, 0, 8, 3, 2, 0, 2, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 6, 2, 8, 0, 0, 1, 0, 0, 0, 0, 0, 7, 0, 0, 4, 2, 0, 0, 9, 0, 0, 5, 8, 0, 0, 0, 0, 0, 4, 1, 9, 0, 0},
-    {0, 7, 0, 0, 0, 2, 5, 0, 9, 5, 8, 0, 3, 4, 0, 0, 0, 0, 2, 0, 1, 5, 0, 9, 0, 0, 8, 1, 0, 3, 0, 0, 0, 0, 5, 0, 9, 5, 6, 0, 3, 0, 0, 7, 1, 7, 2, 8, 0, 5, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 4, 4, 0, 0, 0, 0, 0, 6, 0, 5, 3, 1, 5, 4, 6, 0, 0, 0, 2},
-    {8, 9, 3, 1, 4, 0, 0, 0, 0, 4, 2, 0, 3, 7, 5, 8, 1, 0, 1, 5, 0, 0, 9, 0, 2, 0, 0, 2, 0, 0, 0, 6, 7, 0, 9, 8, 0, 0, 0, 0, 3, 1, 0, 0, 0, 3, 8, 0, 5, 2, 9, 0, 7, 0, 0, 0, 1, 0, 0, 4, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 8, 0, 1, 0, 0},
-    {0, 7, 0, 1, 0, 2, 0, 6, 0, 2, 0, 0, 5, 0, 0, 0, 3, 9, 0, 5, 0, 9, 0, 0, 1, 4, 0, 0, 3, 0, 4, 0, 5, 6, 8, 0, 0, 8, 5, 0, 7, 1, 0, 9, 0, 0, 0, 0, 3, 0, 0, 4, 5, 0, 7, 6, 3, 0, 0, 4, 0, 0, 0, 0, 0, 0, 7, 0, 3, 8, 1, 6, 0, 9, 0, 2, 5, 0, 3, 7, 0},
-    {7, 0, 0, 0, 0, 5, 0, 0, 0, 0, 1, 0, 3, 0, 0, 7, 2, 0, 9, 4, 0, 6, 0, 0, 1, 0, 0, 0, 5, 4, 0, 9, 1, 0, 0, 6, 0, 0, 0, 8, 7, 0, 3, 0, 0, 0, 7, 1, 5, 3, 6, 0, 4, 0, 4, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 2, 0, 6, 9, 5, 9, 0, 4, 6, 8, 2, 0, 0},
-    {0, 7, 1, 0, 3, 0, 0, 9, 6, 0, 0, 3, 0, 6, 0, 0, 0, 5, 6, 5, 0, 7, 8, 9, 0, 0, 3, 2, 0, 8, 0, 0, 0, 0, 0, 7, 1, 0, 5, 8, 7, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 4, 0, 0, 0, 6, 0, 4, 0, 2, 3, 9, 7, 3, 2, 5, 0, 0, 6, 0, 4, 4, 1, 9, 0, 2, 0, 0, 7, 8},
-    {6, 0, 0, 3, 5, 7, 8, 9, 4, 0, 0, 0, 1, 2, 0, 6, 0, 0, 0, 0, 8, 4, 0, 0, 7, 0, 0, 0, 0, 0, 0, 4, 1, 9, 8, 6, 1, 0, 0, 9, 0, 0, 0, 7, 3, 8, 9, 0, 0, 0, 0, 4, 5, 0, 0, 0, 5, 8, 7, 0, 1, 0, 9, 7, 0, 0, 5, 1, 9, 0, 0, 8, 0, 0, 1, 6, 3, 0, 0, 0, 7},
-    {0, 1, 0, 2, 4, 3, 0, 9, 7, 0, 0, 0, 8, 0, 9, 2, 0, 0, 0, 9, 0, 7, 6, 5, 4, 1, 0, 1, 6, 2, 0, 0, 0, 9, 3, 0, 0, 0, 0, 0, 0, 6, 0, 0, 1, 9, 0, 0, 0, 0, 4, 5, 8, 6, 3, 2, 0, 4, 5, 7, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 3, 7, 0},
-    {5, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 8, 5, 6, 3, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 2, 7, 6, 4, 1, 0, 0, 0, 1, 0, 5, 0, 0, 0, 2, 4, 3, 0, 0, 0, 5, 0, 3, 0, 0, 0, 0, 0, 8, 0, 0, 5, 0, 3, 7, 0, 4, 0, 3, 0, 8, 5, 9, 1, 0, 0, 3, 9, 1, 4, 0, 0, 2},
-    {6, 0, 8, 1, 3, 0, 5, 9, 0, 0, 9, 0, 0, 5, 0, 0, 1, 0, 0, 4, 5, 8, 7, 9, 0, 3, 6, 4, 0, 0, 0, 0, 1, 7, 5, 0, 2, 0, 1, 6, 0, 5, 0, 0, 0, 5, 3, 9, 0, 2, 0, 0, 4, 0, 9, 0, 3, 0, 0, 0, 0, 0, 5, 0, 1, 0, 0, 0, 2, 9, 7, 3, 0, 0, 2, 0, 1, 3, 0, 6, 0},
-    {0, 6, 0, 0, 2, 0, 0, 0, 5, 3, 0, 0, 0, 0, 8, 6, 0, 0, 0, 9, 7, 0, 5, 0, 0, 0, 0, 0, 0, 0, 2, 9, 5, 8, 0, 1, 0, 8, 0, 0, 0, 3, 0, 9, 0, 0, 0, 3, 0, 0, 0, 4, 5, 0, 0, 2, 0, 0, 0, 1, 9, 4, 0, 7, 0, 0, 5, 0, 0, 0, 0, 8, 0, 4, 1, 0, 3, 0, 5, 0, 7},
-    {3, 8, 0, 0, 0, 0, 7, 6, 0, 0, 1, 2, 6, 0, 0, 0, 8, 4, 7, 0, 0, 0, 0, 9, 1, 0, 0, 0, 0, 0, 0, 9, 7, 0, 3, 0, 8, 0, 0, 5, 4, 0, 9, 1, 0, 0, 6, 9, 1, 8, 3, 5, 0, 7, 0, 0, 8, 0, 0, 1, 6, 0, 0, 0, 7, 0, 9, 0, 8, 0, 0, 0, 5, 9, 0, 3, 0, 4, 2, 7, 0},
-    {0, 0, 6, 1, 5, 0, 0, 0, 8, 0, 7, 3, 0, 0, 8, 5, 2, 9, 0, 0, 0, 0, 7, 0, 0, 1, 0, 0, 0, 8, 0, 0, 0, 9, 0, 0, 0, 1, 0, 0, 0, 6, 4, 0, 0, 6, 0, 0, 0, 0, 0, 2, 0, 0, 0, 8, 0, 0, 0, 0, 1, 0, 0, 7, 5, 0, 6, 1, 0, 8, 0, 0, 9, 6, 1, 0, 8, 0, 7, 4, 0},
-    {4, 0, 0, 0, 0, 0, 8, 0, 5, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 8, 0, 4, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 6, 0, 3, 0, 7, 0, 5, 0, 0, 2, 0, 0, 0, 0, 0, 0, 1, 0, 4, 0, 0, 0, 0, 0},
-    {5, 2, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 8, 0, 0, 7, 0, 6, 0, 0, 0, 0, 0, 0, 9, 0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0, 2, 0, 8, 0, 0, 6, 5, 7, 0, 0, 0, 4, 0, 6, 0, 3, 0, 1, 0, 8, 0, 0, 9, 2, 7, 0},
-    {6, 0, 0, 0, 0, 0, 3, 0, 8, 4, 0, 9, 1, 0, 5, 7, 0, 0, 0, 6, 0, 0, 7, 9, 2, 3, 8, 0, 0, 0, 6, 0, 4, 8, 0, 0, 1, 0, 9, 3, 0, 0, 6, 0, 0, 0, 0, 8, 0, 0, 0, 9, 1, 0, 5, 8, 0, 0, 2, 0, 0, 3, 0, 7, 0, 4, 1, 0, 6, 0, 0, 0, 9, 0, 7, 0, 2, 8, 5, 4, 0},
-    {1, 6, 0, 0, 0, 4, 3, 0, 9, 0, 0, 0, 7, 0, 8, 0, 1, 0, 5, 3, 0, 2, 6, 0, 0, 7, 4, 0, 0, 0, 4, 0, 0, 0, 8, 0, 0, 9, 0, 0, 1, 0, 0, 2, 0, 6, 4, 3, 0, 0, 0, 0, 8, 0, 0, 7, 0, 5, 0, 6, 0, 2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 9, 4, 7, 0, 0, 5, 0, 3, 0, 0},
-    {0, 0, 0, 0, 0, 0, 6, 0, 3, 5, 8, 0, 0, 0, 0, 9, 1, 0, 7, 2, 3, 0, 0, 0, 0, 0, 0, 9, 0, 4, 0, 6, 0, 0, 8, 0, 0, 0, 7, 5, 1, 0, 0, 0, 2, 0, 0, 8, 0, 0, 0, 7, 3, 0, 0, 5, 0, 0, 0, 6, 4, 0, 1, 0, 2, 0, 0, 0, 8, 0, 0, 0, 6, 0, 0, 0, 0, 5, 0, 4, 0},
-    {7, 4, 3, 0, 6, 9, 0, 0, 0, 0, 0, 0, 0, 7, 5, 4, 3, 0, 0, 0, 9, 0, 0, 1, 0, 8, 7, 5, 0, 0, 0, 2, 0, 6, 0, 9, 3, 0, 1, 4, 0, 7, 0, 0, 5, 0, 9, 0, 6, 0, 3, 2, 4, 0, 1, 6, 0, 0, 8, 9, 7, 2, 5, 0, 0, 3, 8, 0, 0, 0, 0, 4, 0, 0, 5, 9, 6, 0, 0, 0, 2},
-    {8, 0, 0, 0, 0, 1, 9, 0, 0, 5, 4, 0, 2, 0, 3, 7, 0, 6, 3, 0, 6, 0, 8, 0, 4, 1, 0, 9, 0, 0, 1, 7, 5, 0, 2, 0, 0, 3, 0, 6, 0, 0, 4, 8, 0, 0, 7, 0, 5, 2, 4, 0, 0, 6, 1, 0, 0, 0, 9, 0, 8, 0, 3, 0, 0, 0, 4, 5, 6, 0, 7, 2, 0, 3, 0, 9, 0, 0, 1, 0, 8}
-};
-
+    const int num_boards = 2;
+    int boards[num_boards][GRID_SIZE] = {
+        {9, 0, 0, 0, 3, 5, 0, 0, 0, 0, 0, 1, 4, 8, 0, 0, 5, 9, 3, 4, 0, 0, 0, 6, 2, 1, 0, 4, 0, 6, 5, 1, 0, 8, 3, 2, 0, 2, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 6, 2, 8, 0, 0, 1, 0, 0, 0, 0, 0, 7, 0, 0, 4, 2, 0, 0, 9, 0, 0, 5, 8, 0, 0, 0, 0, 0, 4, 1, 9, 0, 0},
+        // ... add other puzzles ...
+        {4, 0, 0, 0, 0, 0, 8, 0, 5, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 8, 0, 4, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 6, 0, 3, 0, 7, 0, 5, 0, 0, 2, 0, 0, 0, 0, 0, 0, 1, 0, 4, 0, 0, 0, 0, 0}
+    };
 
     int *d_boards;
     size_t size = num_boards * GRID_SIZE * sizeof(int);
@@ -199,6 +196,7 @@ int boards[num_boards][GRID_SIZE] = {
 
     // Launch the kernel
     solve_sudokus<<<num_boards, THREADS_PER_BLOCK>>>(d_boards, num_boards);
+    cudaDeviceSynchronize();
 
     // Copy results back to host
     cudaMemcpy(boards, d_boards, size, cudaMemcpyDeviceToHost);
@@ -207,6 +205,7 @@ int boards[num_boards][GRID_SIZE] = {
     for(int i = 0; i < num_boards; i++) {
         printf("Solved Board %d:\n", i);
         print_board(boards[i]);
+        printf("\n");
     }
 
     // Free device memory
