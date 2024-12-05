@@ -37,16 +37,83 @@ __device__ bool is_valid(int *board, int row, int col, int num) {
 
 // Device function to find the next empty cell
 __device__ bool find_empty(int *board, int *row, int *col) {
+    int min_domain_size = 10; // Start with a value greater than the max possible domain size (9)
+    int best_row = -1;
+    int best_col = -1;
+
+    // Iterate over all cells
     for (int i = 0; i < 9; i++) {
         for (int j = 0; j < 9; j++) {
-            if (board[i * 9 + j] == 0) {
-                *row = i;
-                *col = j;
-                return true;
+            int val = board[i * 9 + j];
+            if (val == 0) {
+                // Empty cell, count possibilities
+                int domain_size = 0;
+                for (int num = 1; num <= 9; num++) {
+                    // Check if placing 'num' is valid
+                    bool can_place = true;
+                    // Row check
+                    for (int x = 0; x < 9; x++) {
+                        if (board[i * 9 + x] == num) {
+                            can_place = false;
+                            break;
+                        }
+                    }
+                    if (!can_place) continue;
+
+                    // Column check
+                    for (int x = 0; x < 9; x++) {
+                        if (board[x * 9 + j] == num) {
+                            can_place = false;
+                            break;
+                        }
+                    }
+                    if (!can_place) continue;
+
+                    // 3x3 box check
+                    int box_row_start = (i / 3) * 3;
+                    int box_col_start = (j / 3) * 3;
+                    for (int rr = box_row_start; rr < box_row_start + 3 && can_place; rr++) {
+                        for (int cc = box_col_start; cc < box_col_start + 3; cc++) {
+                            if (board[rr * 9 + cc] == num) {
+                                can_place = false;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (can_place) domain_size++;
+                    if (domain_size > 1 && domain_size >= min_domain_size) {
+                        // If domain_size already exceeds current min_domain_size (or is >1 and min_domain_size=1)
+                        // no need to check further for this cell
+                        break;
+                    }
+                }
+
+                // If domain_size < min_domain_size, update
+                if (domain_size < min_domain_size) {
+                    min_domain_size = domain_size;
+                    best_row = i;
+                    best_col = j;
+                    // If domain_size == 1, return immediately
+                    if (domain_size == 1) {
+                        *row = best_row;
+                        *col = best_col;
+                        return true;
+                    }
+                }
             }
         }
     }
-    return false;
+
+    // If no empty cells found, puzzle is solved
+    if (best_row == -1 && best_col == -1) {
+        return false; 
+    }
+
+    // Return the cell with minimal domain size found
+    *row = best_row;
+    *col = best_col;
+    return true;
 }
 
 // Explicit backtracking implementation for solving Sudoku
@@ -91,15 +158,66 @@ __device__ bool solve(int *board) {
     return false; // Unsolvable
 }
 
+// Host function to check if board is valid
+__device__ bool is_board_valid(int *board) {
+    // Check rows
+    for (int r = 0; r < 9; r++) {
+        int seen[10] = {0}; // track digits 1-9
+        for (int c = 0; c < 9; c++) {
+            int val = board[r*9 + c];
+            if (val != 0) {
+                if (seen[val]) return false;
+                seen[val] = 1;
+            }
+        }
+    }
+
+    // Check columns
+    for (int c = 0; c < 9; c++) {
+        int seen[10] = {0};
+        for (int r = 0; r < 9; r++) {
+            int val = board[r*9 + c];
+            if (val != 0) {
+                if (seen[val]) return false;
+                seen[val] = 1;
+            }
+        }
+    }
+
+    // Check 3x3 sub-grids
+    for (int br = 0; br < 3; br++) {
+        for (int bc = 0; bc < 3; bc++) {
+            int seen[10] = {0};
+            for (int r = br*3; r < br*3+3; r++) {
+                for (int c = bc*3; c < bc*3+3; c++) {
+                    int val = board[r*9 + c];
+                    if (val != 0) {
+                        if (seen[val]) return false;
+                        seen[val] = 1;
+                    }
+                }
+            }
+        }
+    }
+
+    // If no violations found
+    return true;
+}
+
 // Kernel for solving multiple Sudoku puzzles in parallel
 __global__ void solve_sudokus(int *boards, int num_boards) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (idx < num_boards) {
         int *board = boards + idx * GRID_SIZE;
-        if (solve(board)) {
-            printf("Puzzle %d solved successfully.\n", idx);
-        } else {
+        if(is_board_valid(board)) {
+            if (solve(board)) {
+                printf("Puzzle %d solved successfully.\n", idx);
+            } else {
+                printf("Puzzle %d is unsolvable.\n", idx);
+            }
+        }
+        else {
             printf("Puzzle %d is unsolvable.\n", idx);
         }
     }
@@ -138,7 +256,7 @@ int main() {
         {0, 6, 0, 0, 2, 0, 0, 0, 5, 3, 0, 0, 0, 0, 8, 6, 0, 0, 0, 9, 7, 0, 5, 0, 0, 0, 0, 0, 0, 0, 2, 9, 5, 8, 0, 1, 0, 8, 0, 0, 0, 3, 0, 9, 0, 0, 0, 3, 0, 0, 0, 4, 5, 0, 0, 2, 0, 0, 0, 1, 9, 4, 0, 7, 0, 0, 5, 0, 0, 0, 0, 8, 0, 4, 1, 0, 3, 0, 5, 0, 7},
         {3, 8, 0, 0, 0, 0, 7, 6, 0, 0, 1, 2, 6, 0, 0, 0, 8, 4, 7, 0, 0, 0, 0, 9, 1, 0, 0, 0, 0, 0, 0, 9, 7, 0, 3, 0, 8, 0, 0, 5, 4, 0, 9, 1, 0, 0, 6, 9, 1, 8, 3, 5, 0, 7, 0, 0, 8, 0, 0, 1, 6, 0, 0, 0, 7, 0, 9, 0, 8, 0, 0, 0, 5, 9, 0, 3, 0, 4, 2, 7, 0},
         {0, 0, 6, 1, 5, 0, 0, 0, 8, 0, 7, 3, 0, 0, 8, 5, 2, 9, 0, 0, 0, 0, 7, 0, 0, 1, 0, 0, 0, 8, 0, 0, 0, 9, 0, 0, 0, 1, 0, 0, 0, 6, 4, 0, 0, 6, 0, 0, 0, 0, 0, 2, 0, 0, 0, 8, 0, 0, 0, 0, 1, 0, 0, 7, 5, 0, 6, 1, 0, 8, 0, 0, 9, 6, 1, 0, 8, 0, 7, 4, 0},
-        {4, 0, 0, 0, 0, 0, 8, 0, 5, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 8, 0, 4, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 6, 0, 3, 0, 7, 0, 5, 0, 0, 2, 0, 0, 0, 0, 0, 0, 1, 0, 4, 0, 0, 0, 0, 0}
+        {4, 0, 0, 0, 0, 0, 7, 0, 5, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 8, 0, 4, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 6, 0, 3, 0, 7, 0, 5, 0, 0, 2, 0, 0, 0, 0, 0, 0, 1, 0, 4, 0, 0, 0, 0, 0}
     };
 
 
