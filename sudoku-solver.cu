@@ -35,61 +35,160 @@ __device__ bool is_valid(int *board, int row, int col, int num) {
     return true;
 }
 
-// Device function to find the next empty cell
-__device__ bool find_empty(int *board, int *row, int *col) {
-    int min_domain_size = 10; // Start with a value greater than the max possible domain size (9)
+// // Device function to find the next empty cell
+// __device__ bool find_empty(int *board, int *row, int *col) {
+//     int min_domain_size = 10; // Start with a value greater than the max possible domain size (9)
+//     int best_row = -1;
+//     int best_col = -1;
+
+//     // Iterate over all cells
+//     for (int i = 0; i < 9; i++) {
+//         for (int j = 0; j < 9; j++) {
+//             int val = board[i * 9 + j];
+//             if (val == 0) {
+//                 // Empty cell, count possibilities
+//                 int domain_size = 0;
+//                 for (int num = 1; num <= 9; num++) {
+//                     // Check if placing 'num' is valid
+//                     bool can_place = true;
+//                     // Row check
+//                     for (int x = 0; x < 9; x++) {
+//                         if (board[i * 9 + x] == num) {
+//                             can_place = false;
+//                             break;
+//                         }
+//                     }
+//                     if (!can_place) continue;
+
+//                     // Column check
+//                     for (int x = 0; x < 9; x++) {
+//                         if (board[x * 9 + j] == num) {
+//                             can_place = false;
+//                             break;
+//                         }
+//                     }
+//                     if (!can_place) continue;
+
+//                     // 3x3 box check
+//                     int box_row_start = (i / 3) * 3;
+//                     int box_col_start = (j / 3) * 3;
+//                     for (int rr = box_row_start; rr < box_row_start + 3 && can_place; rr++) {
+//                         for (int cc = box_col_start; cc < box_col_start + 3; cc++) {
+//                             if (board[rr * 9 + cc] == num) {
+//                                 can_place = false;
+//                                 break;
+//                             }
+//                         }
+//                     }
+
+//                     if (can_place) domain_size++;
+//                     if (domain_size > 1 && domain_size >= min_domain_size) {
+//                         // If domain_size already exceeds current min_domain_size (or is >1 and min_domain_size=1)
+//                         // no need to check further for this cell
+//                         break;
+//                     }
+//                 }
+
+//                 // If domain_size < min_domain_size, update
+//                 if (domain_size < min_domain_size) {
+//                     min_domain_size = domain_size;
+//                     best_row = i;
+//                     best_col = j;
+//                     // If domain_size == 1, return immediately
+//                     if (domain_size == 1) {
+//                         *row = best_row;
+//                         *col = best_col;
+//                         return true;
+//                     }
+//                 }
+//             }
+//         }
+//     }
+
+//     // If no empty cells found, puzzle is solved
+//     if (best_row == -1 && best_col == -1) {
+//         return false; 
+//     }
+
+//     // Return the cell with minimal domain size found
+//     *row = best_row;
+//     *col = best_col;
+//     return true;
+// }
+
+// // Explicit backtracking implementation for solving Sudoku
+// __device__ bool solve(int *board) {
+//     int stack[GRID_SIZE][2];
+//     int top = -1;
+//     int row, col;
+
+//     if (!find_empty(board, &row, &col)) {
+//         return true; // No empty cells, puzzle solved
+//     }
+
+//     stack[++top][0] = row;
+//     stack[top][1] = col;
+
+//     while (top >= 0) {
+//         row = stack[top][0];
+//         col = stack[top][1];
+
+//         bool placed = false;
+//         for (int num = board[row * 9 + col] + 1; num <= 9; num++) {
+//             if (is_valid(board, row, col, num)) {
+//                 board[row * 9 + col] = num;
+//                 placed = true;
+//                 break;
+//             }
+//         }
+
+//         if (placed) {
+//             if (find_empty(board, &row, &col)) {
+//                 stack[++top][0] = row;
+//                 stack[top][1] = col;
+//             } else {
+//                 return true; // Solved
+//             }
+//         } else {
+//             board[stack[top][0] * 9 + stack[top][1]] = 0; // Reset cell
+//             top--; // Backtrack
+//         }
+//     }
+
+//     return false; // Unsolvable
+// }
+
+__device__ int popcount9(int x) {
+    // __popc is a CUDA built-in that returns the number of set bits in an integer
+    // We only use lower 9 bits, but __popc works on full 32 bits, which is fine.
+    return __popc((unsigned int)x);
+}
+
+__device__ bool find_empty(int *board, int *row, int *col, int *rowMask, int *colMask, int *boxMask) {
+    int min_domain_size = 10; 
     int best_row = -1;
     int best_col = -1;
 
-    // Iterate over all cells
     for (int i = 0; i < 9; i++) {
         for (int j = 0; j < 9; j++) {
             int val = board[i * 9 + j];
             if (val == 0) {
-                // Empty cell, count possibilities
-                int domain_size = 0;
-                for (int num = 1; num <= 9; num++) {
-                    // Check if placing 'num' is valid
-                    bool can_place = true;
-                    // Row check
-                    for (int x = 0; x < 9; x++) {
-                        if (board[i * 9 + x] == num) {
-                            can_place = false;
-                            break;
-                        }
-                    }
-                    if (!can_place) continue;
+                int rMask = rowMask[i];
+                int cMask = colMask[j];
+                int bMask = boxMask[(i/3)*3 + (j/3)];
+                int used = rMask | cMask | bMask;
 
-                    // Column check
-                    for (int x = 0; x < 9; x++) {
-                        if (board[x * 9 + j] == num) {
-                            can_place = false;
-                            break;
-                        }
-                    }
-                    if (!can_place) continue;
+                // possible values bitmask
+                int possible = (~used) & 0x1FF;
+                int domain_size = __popc((unsigned int)possible);
 
-                    // 3x3 box check
-                    int box_row_start = (i / 3) * 3;
-                    int box_col_start = (j / 3) * 3;
-                    for (int rr = box_row_start; rr < box_row_start + 3 && can_place; rr++) {
-                        for (int cc = box_col_start; cc < box_col_start + 3; cc++) {
-                            if (board[rr * 9 + cc] == num) {
-                                can_place = false;
-                                break;
-                            }
-                        }
-                    }
-
-                    if (can_place) domain_size++;
-                    if (domain_size > 1 && domain_size >= min_domain_size) {
-                        // If domain_size already exceeds current min_domain_size (or is >1 and min_domain_size=1)
-                        // no need to check further for this cell
-                        break;
-                    }
+                if (domain_size == 0) {
+                    // A cell with zero possibilities means no solution
+                    *row = -1;
+                    *col = -1;
+                    return false;
                 }
 
-                // If domain_size < min_domain_size, update
                 if (domain_size < min_domain_size) {
                     min_domain_size = domain_size;
                     best_row = i;
@@ -105,58 +204,159 @@ __device__ bool find_empty(int *board, int *row, int *col) {
         }
     }
 
-    // If no empty cells found, puzzle is solved
     if (best_row == -1 && best_col == -1) {
+        // No empty cells found -> puzzle solved
+        *row = 99; 
+        *col = 99; 
         return false; 
     }
 
-    // Return the cell with minimal domain size found
     *row = best_row;
     *col = best_col;
     return true;
 }
 
-// Explicit backtracking implementation for solving Sudoku
-__device__ bool solve(int *board) {
-    int stack[GRID_SIZE][2];
-    int top = -1;
-    int row, col;
-
-    if (!find_empty(board, &row, &col)) {
-        return true; // No empty cells, puzzle solved
+__device__ void init_masks(int *board, int *rowMask, int *colMask, int *boxMask) {
+    // Initialize masks
+    for (int i = 0; i < 9; i++) {
+        rowMask[i] = 0;
+        colMask[i] = 0;
+        boxMask[i] = 0;
     }
 
-    stack[++top][0] = row;
-    stack[top][1] = col;
-
-    while (top >= 0) {
-        row = stack[top][0];
-        col = stack[top][1];
-
-        bool placed = false;
-        for (int num = board[row * 9 + col] + 1; num <= 9; num++) {
-            if (is_valid(board, row, col, num)) {
-                board[row * 9 + col] = num;
-                placed = true;
-                break;
-            }
-        }
-
-        if (placed) {
-            if (find_empty(board, &row, &col)) {
-                stack[++top][0] = row;
-                stack[top][1] = col;
-            } else {
-                return true; // Solved
-            }
-        } else {
-            board[stack[top][0] * 9 + stack[top][1]] = 0; // Reset cell
-            top--; // Backtrack
+    // Set bits for existing numbers
+    for (int cell = 0; cell < 81; cell++) {
+        int val = board[cell];
+        if (val > 0) {
+            int r = cell / 9;
+            int c = cell % 9;
+            int b = (r / 3) * 3 + (c / 3);
+            int bit = 1 << (val - 1);
+            rowMask[r] |= bit;
+            colMask[c] |= bit;
+            boxMask[b] |= bit;
         }
     }
-
-    return false; // Unsolvable
 }
+
+// When placing a number val at (r,c):
+__device__ void place_number(int *board, int r, int c, int val, int *rowMask, int *colMask, int *boxMask) {
+    board[r * 9 + c] = val;
+    int bit = 1 << (val - 1);
+    rowMask[r] |= bit;
+    colMask[c] |= bit;
+    boxMask[(r/3)*3+(c/3)] |= bit;
+}
+
+// When removing a number val at (r,c) during backtracking:
+__device__ void remove_number(int *board, int r, int c, int val, int *rowMask, int *colMask, int *boxMask) {
+    board[r * 9 + c] = 0;
+    int bit = 1 << (val - 1);
+    rowMask[r] &= ~bit;
+    colMask[c] &= ~bit;
+    boxMask[(r/3)*3+(c/3)] &= ~bit;
+}
+
+__device__ bool solve(int *board) {
+    __shared__ int rowMask[9], colMask[9], boxMask[9];
+    __shared__ int stack[GRID_SIZE][3]; // (row, col, current_val)
+    __shared__ int top;
+
+    if (threadIdx.x == 0) {
+        init_masks(board, rowMask, colMask, boxMask);
+        top = -1;
+    }
+    __syncthreads();
+
+    int row, col;
+    bool found;
+
+    if (threadIdx.x == 0) {
+        found = find_empty(board, &row, &col, rowMask, colMask, boxMask);
+        if (!found) {
+            // No empty cell or no solution scenario:
+            if (row == -1 && col == -1) {
+                // no solution scenario from initial config
+                return false;
+            } else if (row == 99 && col == 99) {
+                // no empty cells => solved
+                return true;
+            }
+        }
+        // We have an empty cell with a definite domain
+        top++;
+        stack[top][0] = row;
+        stack[top][1] = col;
+        stack[top][2] = board[row*9 + col]; // current val (0)
+    }
+    __syncthreads();
+
+    while (true) {
+        if (threadIdx.x == 0) {
+            if (top < 0) {
+                // no more positions in stack => no solution
+                // no special code needed, just return
+            }
+        }
+        __syncthreads();
+
+        if (threadIdx.x == 0 && top < 0) return false; // no solution
+
+        if (threadIdx.x == 0) {
+            // backtracking logic
+            row = stack[top][0];
+            col = stack[top][1];
+            int start_val = stack[top][2];
+
+            bool placed = false;
+            for (int num = start_val + 1; num <= 9; num++) {
+                int rMask = rowMask[row];
+                int cMask = colMask[col];
+                int bMask = boxMask[(row/3)*3+(col/3)];
+                int used = rMask | cMask | bMask;
+                int bit = 1 << (num-1);
+
+                if ((used & bit) == 0) {
+                    place_number(board, row, col, num, rowMask, colMask, boxMask);
+                    stack[top][2] = num;
+                    placed = true;
+                    break;
+                }
+            }
+
+            if (placed) {
+                bool next_found = find_empty(board, &row, &col, rowMask, colMask, boxMask);
+                if (!next_found) {
+                    // no empty or no solution scenario
+                    if (row == -1 && col == -1) {
+                        // no solution from this configuration: backtrack
+                        int val = board[stack[top][0]*9+stack[top][1]];
+                        if (val > 0) remove_number(board, stack[top][0], stack[top][1], val, rowMask, colMask, boxMask);
+                        top--;
+                    } else if (row == 99 && col == 99) {
+                        // puzzle solved
+                        return true;
+                    }
+                } else {
+                    // got next cell
+                    top++;
+                    stack[top][0] = row;
+                    stack[top][1] = col;
+                    stack[top][2] = board[row*9+col];
+                }
+            } else {
+                // no number placed, backtrack
+                int val = board[row*9+col];
+                if (val > 0) remove_number(board, row, col, val, rowMask, colMask, boxMask);
+                top--;
+            }
+        }
+        __syncthreads();
+    }
+
+    return false; // unreachable
+}
+
 
 // Host function to check if board is valid
 __device__ bool is_board_valid(int *board) {
