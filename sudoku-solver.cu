@@ -241,12 +241,12 @@ void print_board(int *board) {
     }
 }
 
-#define NUM_BOARDS 44
+#define NUM_BOARDS 95
 
 #include <stdio.h>
 #include <stdlib.h>
 
-#define NUM_BOARDS 44
+#define NUM_BOARDS 95
 #define GRID_SIZE 81
 
 void read_sudoku_boards(const char *filename, int boards[NUM_BOARDS][GRID_SIZE]) {
@@ -295,9 +295,43 @@ void read_sudoku_boards(const char *filename, int boards[NUM_BOARDS][GRID_SIZE])
     }
 }
 
+void save_sudoku_boards(const char *filename, int boards[NUM_BOARDS][GRID_SIZE]) {
+    FILE *file = fopen(filename, "w");
+    if (!file) {
+        fprintf(stderr, "Error: Unable to open file '%s' for writing\n", filename);
+        return;
+    }
+
+    for (int b = 0; b < NUM_BOARDS; b++) {
+        fprintf(file, "|-----------------------|\n");
+
+        for (int row = 0; row < 9; row++) {
+            fprintf(file, "|");
+            for (int col = 0; col < 9; col++) {
+                int idx = row * 9 + col;
+                fprintf(file, "%2d", boards[b][idx]);
+                if (col % 3 == 2) {
+                    fprintf(file, " |");
+                }
+            }
+            fprintf(file, "\n");
+            if (row % 3 == 2 && row != 8) {
+                fprintf(file, "|-----------------------|\n");
+            }
+        }
+
+        fprintf(file, "|-----------------------|\n");
+        if (b < NUM_BOARDS - 1) {
+            fprintf(file, "\n");
+        }
+    }
+
+    fclose(file);
+}
+
 // Host code for managing CUDA memory and invoking the kernel
 int main() {
-    const int num_boards = 44;
+    const int num_boards = 95;
     // int boards[num_boards][GRID_SIZE] = {
     //     {9, 0, 0, 0, 3, 5, 0, 0, 0, 0, 0, 1, 4, 8, 0, 0, 5, 9, 3, 4, 0, 0, 0, 6, 2, 1, 0, 4, 0, 6, 5, 1, 0, 8, 3, 2, 0, 2, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 6, 2, 8, 0, 0, 1, 0, 0, 0, 0, 0, 7, 0, 0, 4, 2, 0, 0, 9, 0, 0, 5, 8, 0, 0, 0, 0, 0, 4, 1, 9, 0, 0},
     //     {0, 7, 0, 0, 0, 2, 5, 0, 9, 5, 8, 0, 3, 4, 0, 0, 0, 0, 2, 0, 1, 5, 0, 9, 0, 0, 8, 1, 0, 3, 0, 0, 0, 0, 5, 0, 9, 5, 6, 0, 3, 0, 0, 7, 1, 7, 2, 8, 0, 5, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 4, 4, 0, 0, 0, 0, 0, 6, 0, 5, 3, 1, 5, 4, 6, 0, 0, 0, 2},
@@ -347,6 +381,9 @@ int main() {
         printf("Solved Board %d:\n", i);
         print_board(boards[i]);
     }
+
+    // Save boards to file
+    save_sudoku_boards("sol.out", boards);
 
     // Free device memory
     cudaFree(d_boards);
