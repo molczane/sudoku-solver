@@ -340,10 +340,10 @@ int main() {
     read_sudoku_boards("inp.in", boards);
 
     // Print the solved boards
-    for(int i = 0; i < num_boards; i++) {
-        printf("Unsolved Board %d:\n", i);
-        print_board(boards[i]);
-    }
+    // for(int i = 0; i < num_boards; i++) {
+    //     printf("Unsolved Board %d:\n", i);
+    //     print_board(boards[i]);
+    // }
 
     int *d_boards;
     size_t size = num_boards * GRID_SIZE * sizeof(int);
@@ -361,10 +361,10 @@ int main() {
     cudaMemcpy(boards, d_boards, size, cudaMemcpyDeviceToHost);
 
     // Print the solved boards
-    for(int i = 0; i < num_boards; i++) {
-        printf("Solved Board %d:\n", i);
-        print_board(boards[i]);
-    }
+    // for(int i = 0; i < num_boards; i++) {
+    //     printf("Solved Board %d:\n", i);
+    //     print_board(boards[i]);
+    // }
 
     // Save boards to file
     save_sudoku_boards("sol.out", boards);
