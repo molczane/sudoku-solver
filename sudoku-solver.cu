@@ -1,6 +1,7 @@
 #include <cuda_runtime.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include <stdlib.h>
 
 #define GRID_SIZE 81
 #define THREADS_PER_BLOCK 1
@@ -34,6 +35,7 @@ __device__ bool is_valid(int *board, int row, int col, int num) {
 
     return true;
 }
+
 
 // Device function to find the next empty cell
 __device__ bool find_empty(int *board, int *row, int *col) {
@@ -239,26 +241,109 @@ void print_board(int *board) {
     }
 }
 
+#define NUM_BOARDS 95
+
+#include <stdio.h>
+#include <stdlib.h>
+
+#define NUM_BOARDS 95
+#define GRID_SIZE 81
+
+void read_sudoku_boards(const char *filename, int boards[NUM_BOARDS][GRID_SIZE]) {
+    FILE *file = fopen(filename, "r");
+    if (!file) {
+        fprintf(stderr, "Error: Unable to open file '%s'\n", filename);
+        exit(1);
+    }
+
+    int board_index = 0;
+    int cell_index = 0;
+    char line[128];
+
+    while (fgets(line, sizeof(line), file)) {
+        // Skip empty lines
+        if (line[0] == '\n' || line[0] == '\0') {
+            continue;
+        }
+
+        // Parse 9 characters from the line and add to the current board
+        for (int i = 0; i < 9; i++) {
+            if (line[i] >= '0' && line[i] <= '9') {
+                boards[board_index][cell_index++] = line[i] - '0';
+            }
+        }
+
+        // If a board is fully read, move to the next board
+        if (cell_index == GRID_SIZE) {
+            board_index++;
+            cell_index = 0;
+
+            if (board_index > NUM_BOARDS) {
+                fprintf(stderr, "Error: More boards in file than expected (%d).\n", NUM_BOARDS);
+                fclose(file);
+                exit(1);
+            }
+        }
+    }
+
+    fclose(file);
+
+    // Check if exactly the expected number of boards was read
+    if (board_index != NUM_BOARDS) {
+        fprintf(stderr, "Error: Fewer boards in file than expected (%d).\n", NUM_BOARDS);
+        exit(1);
+    }
+}
+
+void save_sudoku_boards(const char *filename, int boards[NUM_BOARDS][GRID_SIZE]) {
+    FILE *file = fopen(filename, "w");
+    if (!file) {
+        fprintf(stderr, "Error: Unable to open file '%s' for writing\n", filename);
+        return;
+    }
+
+    for (int b = 0; b < NUM_BOARDS; b++) {
+        fprintf(file, "|-----------------------|\n");
+
+        for (int row = 0; row < 9; row++) {
+            fprintf(file, "|");
+            for (int col = 0; col < 9; col++) {
+                int idx = row * 9 + col;
+                fprintf(file, "%2d", boards[b][idx]);
+                if (col % 3 == 2) {
+                    fprintf(file, " |");
+                }
+            }
+            fprintf(file, "\n");
+            if (row % 3 == 2 && row != 8) {
+                fprintf(file, "|-----------------------|\n");
+            }
+        }
+
+        fprintf(file, "|-----------------------|\n");
+        if (b < NUM_BOARDS - 1) {
+            fprintf(file, "\n");
+        }
+    }
+
+    fclose(file);
+}
+
 // Host code for managing CUDA memory and invoking the kernel
 int main() {
-    const int num_boards = 14;
-    int boards[num_boards][GRID_SIZE] = {
-        {9, 0, 0, 0, 3, 5, 0, 0, 0, 0, 0, 1, 4, 8, 0, 0, 5, 9, 3, 4, 0, 0, 0, 6, 2, 1, 0, 4, 0, 6, 5, 1, 0, 8, 3, 2, 0, 2, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 6, 2, 8, 0, 0, 1, 0, 0, 0, 0, 0, 7, 0, 0, 4, 2, 0, 0, 9, 0, 0, 5, 8, 0, 0, 0, 0, 0, 4, 1, 9, 0, 0},
-        {0, 7, 0, 0, 0, 2, 5, 0, 9, 5, 8, 0, 3, 4, 0, 0, 0, 0, 2, 0, 1, 5, 0, 9, 0, 0, 8, 1, 0, 3, 0, 0, 0, 0, 5, 0, 9, 5, 6, 0, 3, 0, 0, 7, 1, 7, 2, 8, 0, 5, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 4, 4, 0, 0, 0, 0, 0, 6, 0, 5, 3, 1, 5, 4, 6, 0, 0, 0, 2},
-        {8, 9, 3, 1, 4, 0, 0, 0, 0, 4, 2, 0, 3, 7, 5, 8, 1, 0, 1, 5, 0, 0, 9, 0, 2, 0, 0, 2, 0, 0, 0, 6, 7, 0, 9, 8, 0, 0, 0, 0, 3, 1, 0, 0, 0, 3, 8, 0, 5, 2, 9, 0, 7, 0, 0, 0, 1, 0, 0, 4, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 8, 0, 1, 0, 0},
-        {0, 7, 0, 1, 0, 2, 0, 6, 0, 2, 0, 0, 5, 0, 0, 0, 3, 9, 0, 5, 0, 9, 0, 0, 1, 4, 0, 0, 3, 0, 4, 0, 5, 6, 8, 0, 0, 8, 5, 0, 7, 1, 0, 9, 0, 0, 0, 0, 3, 0, 0, 4, 5, 0, 7, 6, 3, 0, 0, 4, 0, 0, 0, 0, 0, 0, 7, 0, 3, 8, 1, 6, 0, 9, 0, 2, 5, 0, 3, 7, 0},
-        {7, 0, 0, 0, 0, 5, 0, 0, 0, 0, 1, 0, 3, 0, 0, 7, 2, 0, 9, 4, 0, 6, 0, 0, 1, 0, 0, 0, 5, 4, 0, 9, 1, 0, 0, 6, 0, 0, 0, 8, 7, 0, 3, 0, 0, 0, 7, 1, 5, 3, 6, 0, 4, 0, 4, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 2, 0, 6, 9, 5, 9, 0, 4, 6, 8, 2, 0, 0},
-        {0, 7, 1, 0, 3, 0, 0, 9, 6, 0, 0, 3, 0, 6, 0, 0, 0, 5, 6, 5, 0, 7, 8, 9, 0, 0, 3, 2, 0, 8, 0, 0, 0, 0, 0, 7, 1, 0, 5, 8, 7, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 4, 0, 0, 0, 6, 0, 4, 0, 2, 3, 9, 7, 3, 2, 5, 0, 0, 6, 0, 4, 4, 1, 9, 0, 2, 0, 0, 7, 8},
-        {6, 0, 0, 3, 5, 7, 8, 9, 4, 0, 0, 0, 1, 2, 0, 6, 0, 0, 0, 0, 8, 4, 0, 0, 7, 0, 0, 0, 0, 0, 0, 4, 1, 9, 8, 6, 1, 0, 0, 9, 0, 0, 0, 7, 3, 8, 9, 0, 0, 0, 0, 4, 5, 0, 0, 0, 5, 8, 7, 0, 1, 0, 9, 7, 0, 0, 5, 1, 9, 0, 0, 8, 0, 0, 1, 6, 3, 0, 0, 0, 7},
-        {0, 1, 0, 2, 4, 3, 0, 9, 7, 0, 0, 0, 8, 0, 9, 2, 0, 0, 0, 9, 0, 7, 6, 5, 4, 1, 0, 1, 6, 2, 0, 0, 0, 9, 3, 0, 0, 0, 0, 0, 0, 6, 0, 0, 1, 9, 0, 0, 0, 0, 4, 5, 8, 6, 3, 2, 0, 4, 5, 7, 0, 0, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 5, 4, 0, 0, 0, 3, 7, 0},
-        {5, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 8, 5, 6, 3, 0, 0, 0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 2, 7, 6, 4, 1, 0, 0, 0, 1, 0, 5, 0, 0, 0, 2, 4, 3, 0, 0, 0, 5, 0, 3, 0, 0, 0, 0, 0, 8, 0, 0, 5, 0, 3, 7, 0, 4, 0, 3, 0, 8, 5, 9, 1, 0, 0, 3, 9, 1, 4, 0, 0, 2},
-        {6, 0, 8, 1, 3, 0, 5, 9, 0, 0, 9, 0, 0, 5, 0, 0, 1, 0, 0, 4, 5, 8, 7, 9, 0, 3, 6, 4, 0, 0, 0, 0, 1, 7, 5, 0, 2, 0, 1, 6, 0, 5, 0, 0, 0, 5, 3, 9, 0, 2, 0, 0, 4, 0, 9, 0, 3, 0, 0, 0, 0, 0, 5, 0, 1, 0, 0, 0, 2, 9, 7, 3, 0, 0, 2, 0, 1, 3, 0, 6, 0},
-        {0, 6, 0, 0, 2, 0, 0, 0, 5, 3, 0, 0, 0, 0, 8, 6, 0, 0, 0, 9, 7, 0, 5, 0, 0, 0, 0, 0, 0, 0, 2, 9, 5, 8, 0, 1, 0, 8, 0, 0, 0, 3, 0, 9, 0, 0, 0, 3, 0, 0, 0, 4, 5, 0, 0, 2, 0, 0, 0, 1, 9, 4, 0, 7, 0, 0, 5, 0, 0, 0, 0, 8, 0, 4, 1, 0, 3, 0, 5, 0, 7},
-        {3, 8, 0, 0, 0, 0, 7, 6, 0, 0, 1, 2, 6, 0, 0, 0, 8, 4, 7, 0, 0, 0, 0, 9, 1, 0, 0, 0, 0, 0, 0, 9, 7, 0, 3, 0, 8, 0, 0, 5, 4, 0, 9, 1, 0, 0, 6, 9, 1, 8, 3, 5, 0, 7, 0, 0, 8, 0, 0, 1, 6, 0, 0, 0, 7, 0, 9, 0, 8, 0, 0, 0, 5, 9, 0, 3, 0, 4, 2, 7, 0},
-        {0, 0, 6, 1, 5, 0, 0, 0, 8, 0, 7, 3, 0, 0, 8, 5, 2, 9, 0, 0, 0, 0, 7, 0, 0, 1, 0, 0, 0, 8, 0, 0, 0, 9, 0, 0, 0, 1, 0, 0, 0, 6, 4, 0, 0, 6, 0, 0, 0, 0, 0, 2, 0, 0, 0, 8, 0, 0, 0, 0, 1, 0, 0, 7, 5, 0, 6, 1, 0, 8, 0, 0, 9, 6, 1, 0, 8, 0, 7, 4, 0},
-        {4, 0, 0, 0, 0, 0, 7, 0, 5, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 8, 0, 4, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 6, 0, 3, 0, 7, 0, 5, 0, 0, 2, 0, 0, 0, 0, 0, 0, 1, 0, 4, 0, 0, 0, 0, 0}
-    };
+    const int num_boards = 95;
 
+    // Statically declared array for NUM_BOARDS boards
+    int boards[NUM_BOARDS][GRID_SIZE];
+
+    // Read boards from file
+    read_sudoku_boards("inp.in", boards);
+
+    // Print the solved boards
+    for(int i = 0; i < num_boards; i++) {
+        printf("Unsolved Board %d:\n", i);
+        print_board(boards[i]);
+    }
 
     int *d_boards;
     size_t size = num_boards * GRID_SIZE * sizeof(int);
@@ -280,6 +365,9 @@ int main() {
         printf("Solved Board %d:\n", i);
         print_board(boards[i]);
     }
+
+    // Save boards to file
+    save_sudoku_boards("sol.out", boards);
 
     // Free device memory
     cudaFree(d_boards);
