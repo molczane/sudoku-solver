@@ -6,49 +6,8 @@
 #define GRID_SIZE 81
 #define THREADS_PER_BLOCK 1
 
-#define GRID_SIZE 81
-#define BOARD_SIZE 9
-
-// Domain tracking structure for each cell
-struct CellDomain {
-    int possible_values[9];  // Bitmap or array of possible values
-    int domain_size;         // Number of possible values
-};
-
-// // Helper function to check if placing a number is valid
-// __device__ bool is_valid(int *board, int row, int col, int num) {
-//     // Check the row
-//     for (int i = 0; i < 9; i++) {
-//         if (board[row * 9 + i] == num) {
-//             return false;
-//         }
-//     }
-
-//     // Check the column
-//     for (int i = 0; i < 9; i++) {
-//         if (board[i * 9 + col] == num) {
-//             return false;
-//         }
-//     }
-
-//     // Check the 3x3 sub-grid
-//     int box_row_start = (row / 3) * 3;
-//     int box_col_start = (col / 3) * 3;
-//     for (int i = box_row_start; i < box_row_start + 3; i++) {
-//         for (int j = box_col_start; j < box_col_start + 3; j++) {
-//             if (board[i * 9 + j] == num) {
-//                 return false;
-//             }
-//         }
-//     }
-
-//     return true;
-// }
-
+// Helper function to check if placing a number is valid
 __device__ bool is_valid(int *board, int row, int col, int num) {
-    // Prevent placing 0 as a valid number
-    if (num == 0) return false;
-
     // Check the row
     for (int i = 0; i < 9; i++) {
         if (board[row * 9 + i] == num) {
@@ -77,121 +36,68 @@ __device__ bool is_valid(int *board, int row, int col, int num) {
     return true;
 }
 
-// Device function to initialize domains for the entire board
-__device__ void initialize_domains(int *board, struct CellDomain *domains) {
-    for (int row = 0; row < BOARD_SIZE; row++) {
-        for (int col = 0; col < BOARD_SIZE; col++) {
-            int index = row * BOARD_SIZE + col;
-            
-            // Reset domain for this cell
-            domains[index].domain_size = 0;
-            
-            // If cell is empty (0), find possible values
-            if (board[index] == 0) {
-                // Reset possible values
-                for (int i = 0; i < 9; i++) {
-                    domains[index].possible_values[i] = 0;
-                }
-                
-                // Check which numbers can be placed
-                for (int num = 1; num <= 9; num++) {
-                    if (is_valid(board, row, col, num)) {
-                        domains[index].possible_values[domains[index].domain_size++] = num;
-                    }
-                }
-            } else {
-                // Filled cell, no domain
-                domains[index].domain_size = 0;
-            }
-        }
-    }
-}
 
-// Device function to update domains after placing a number
-__device__ void update_domains(int *board, struct CellDomain *domains, int placed_row, int placed_col, int placed_num) {
-    // Update row
-    for (int col = 0; col < BOARD_SIZE; col++) {
-        if (col != placed_col) {
-            int index = placed_row * BOARD_SIZE + col;
-            if (board[index] == 0) {
-                // Remove the placed number from possible values if present
-                for (int i = 0; i < domains[index].domain_size; i++) {
-                    if (domains[index].possible_values[i] == placed_num) {
-                        // Swap with last element and reduce domain size
-                        domains[index].possible_values[i] = 
-                            domains[index].possible_values[domains[index].domain_size - 1];
-                        domains[index].domain_size--;
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    
-    // Update column
-    for (int row = 0; row < BOARD_SIZE; row++) {
-        if (row != placed_row) {
-            int index = row * BOARD_SIZE + placed_col;
-            if (board[index] == 0) {
-                // Remove the placed number from possible values if present
-                for (int i = 0; i < domains[index].domain_size; i++) {
-                    if (domains[index].possible_values[i] == placed_num) {
-                        // Swap with last element and reduce domain size
-                        domains[index].possible_values[i] = 
-                            domains[index].possible_values[domains[index].domain_size - 1];
-                        domains[index].domain_size--;
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    
-    // Update 3x3 sub-grid
-    int box_row_start = (placed_row / 3) * 3;
-    int box_col_start = (placed_col / 3) * 3;
-    
-    for (int r = box_row_start; r < box_row_start + 3; r++) {
-        for (int c = box_col_start; c < box_col_start + 3; c++) {
-            if (r != placed_row || c != placed_col) {
-                int index = r * BOARD_SIZE + c;
-                if (board[index] == 0) {
-                    // Remove the placed number from possible values if present
-                    for (int i = 0; i < domains[index].domain_size; i++) {
-                        if (domains[index].possible_values[i] == placed_num) {
-                            // Swap with last element and reduce domain size
-                            domains[index].possible_values[i] = 
-                                domains[index].possible_values[domains[index].domain_size - 1];
-                            domains[index].domain_size--;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-// Improved find_empty using domain tracking
-__device__ bool find_empty_with_domains(int *board, struct CellDomain *domains, int *row, int *col) {
-    int min_domain_size = 10;
+// Device function to find the next empty cell
+__device__ bool find_empty(int *board, int *row, int *col) {
+    int min_domain_size = 10; // Start with a value greater than the max possible domain size (9)
     int best_row = -1;
     int best_col = -1;
 
-    // Find cell with smallest domain size
-    for (int i = 0; i < BOARD_SIZE; i++) {
-        for (int j = 0; j < BOARD_SIZE; j++) {
-            int index = i * BOARD_SIZE + j;
-            
-            // Only consider empty cells
-            if (board[index] == 0 && domains[index].domain_size > 0) {
-                if (domains[index].domain_size < min_domain_size) {
-                    min_domain_size = domains[index].domain_size;
+    // Iterate over all cells
+    for (int i = 0; i < 9; i++) {
+        for (int j = 0; j < 9; j++) {
+            int val = board[i * 9 + j];
+            if (val == 0) {
+                // Empty cell, count possibilities
+                int domain_size = 0;
+                for (int num = 1; num <= 9; num++) {
+                    // Check if placing 'num' is valid
+                    bool can_place = true;
+                    // Row check
+                    for (int x = 0; x < 9; x++) {
+                        if (board[i * 9 + x] == num) {
+                            can_place = false;
+                            break;
+                        }
+                    }
+                    if (!can_place) continue;
+
+                    // Column check
+                    for (int x = 0; x < 9; x++) {
+                        if (board[x * 9 + j] == num) {
+                            can_place = false;
+                            break;
+                        }
+                    }
+                    if (!can_place) continue;
+
+                    // 3x3 box check
+                    int box_row_start = (i / 3) * 3;
+                    int box_col_start = (j / 3) * 3;
+                    for (int rr = box_row_start; rr < box_row_start + 3 && can_place; rr++) {
+                        for (int cc = box_col_start; cc < box_col_start + 3; cc++) {
+                            if (board[rr * 9 + cc] == num) {
+                                can_place = false;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (can_place) domain_size++;
+                    if (domain_size > 1 && domain_size >= min_domain_size) {
+                        // If domain_size already exceeds current min_domain_size (or is >1 and min_domain_size=1)
+                        // no need to check further for this cell
+                        break;
+                    }
+                }
+
+                // If domain_size < min_domain_size, update
+                if (domain_size < min_domain_size) {
+                    min_domain_size = domain_size;
                     best_row = i;
                     best_col = j;
-                    
-                    // If we find a cell with domain size 1, return immediately
-                    if (min_domain_size == 1) {
+                    // If domain_size == 1, return immediately
+                    if (domain_size == 1) {
                         *row = best_row;
                         *col = best_col;
                         return true;
@@ -212,20 +118,82 @@ __device__ bool find_empty_with_domains(int *board, struct CellDomain *domains, 
     return true;
 }
 
+__device__ void initialize_possibilities(int *board, int *possibilities_per_cell) {
+    for (int i = 0; i < 9; i++) {
+        for (int j = 0; j < 9; j++) {
+            int cell_value = board[i * 9 + j];
+            if (cell_value != 0) {
+                // Mark filled cells with -1
+                possibilities_per_cell[i * 9 + j] = -1;
+            } else {
+                // Count possible values for empty cells
+                int domain_size = 0;
+                for (int num = 1; num <= 9; num++) {
+                    bool can_place = true;
 
-// Modified solve function to use domain tracking
+                    // Row check
+                    for (int x = 0; x < 9; x++) {
+                        if (board[i * 9 + x] == num) {
+                            can_place = false;
+                            break;
+                        }
+                    }
+                    if (!can_place) continue;
+
+                    // Column check
+                    for (int x = 0; x < 9; x++) {
+                        if (board[x * 9 + j] == num) {
+                            can_place = false;
+                            break;
+                        }
+                    }
+                    if (!can_place) continue;
+
+                    // 3x3 box check
+                    int box_row_start = (i / 3) * 3;
+                    int box_col_start = (j / 3) * 3;
+                    for (int rr = box_row_start; rr < box_row_start + 3 && can_place; rr++) {
+                        for (int cc = box_col_start; cc < box_col_start + 3; cc++) {
+                            if (board[rr * 9 + cc] == num) {
+                                can_place = false;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (can_place) {
+                        domain_size++;
+                    }
+                }
+
+                // Assign the domain size to the possibilities array
+                possibilities_per_cell[i * 9 + j] = domain_size;
+            }
+        }
+    }
+}
+
+__device__ void print_board_d(int *board) {
+    for (int i = 0; i < 9; i++) {
+        for (int j = 0; j < 9; j++) {
+            printf("%d ", board[i * 9 + j]);
+        }
+        printf("\n");
+    }
+    printf("\n");
+}
+
+// Explicit backtracking implementation for solving Sudoku
 __device__ bool solve(int *board) {
-    // Allocate domains on device
-    struct CellDomain domains[GRID_SIZE];
-    
-    // Initialize domains for the board
-    initialize_domains(board, domains);
+    int possibilities_per_cell[GRID_SIZE];
+
+    initialize_possibilities(board, possibilities_per_cell);
 
     int stack[GRID_SIZE][2];
     int top = -1;
     int row, col;
 
-    if (!find_empty_with_domains(board, domains, &row, &col)) {
+    if (!find_empty(board, &row, &col)) {
         return true; // No empty cells, puzzle solved
     }
 
@@ -235,168 +203,31 @@ __device__ bool solve(int *board) {
     while (top >= 0) {
         row = stack[top][0];
         col = stack[top][1];
-        int index = row * BOARD_SIZE + col;
 
         bool placed = false;
-        
-        // Try values from the cell's domain
-        for (int i = 0; i < domains[index].domain_size; i++) {
-            int num = domains[index].possible_values[i];
-            
+        for (int num = board[row * 9 + col] + 1; num <= 9; num++) {
             if (is_valid(board, row, col, num)) {
-                board[index] = num;
-                
-                // Update domains after placing the number
-                update_domains(board, domains, row, col, num);
-                
+                board[row * 9 + col] = num;
                 placed = true;
                 break;
             }
         }
 
         if (placed) {
-            if (find_empty_with_domains(board, domains, &row, &col)) {
+            if (find_empty(board, &row, &col)) {
                 stack[++top][0] = row;
                 stack[top][1] = col;
             } else {
                 return true; // Solved
             }
         } else {
-            board[stack[top][0] * BOARD_SIZE + stack[top][1]] = 0; // Reset cell
-            
-            // Reinitialize domains for the affected region
-            initialize_domains(board, domains);
-            
+            board[stack[top][0] * 9 + stack[top][1]] = 0; // Reset cell
             top--; // Backtrack
         }
     }
 
     return false; // Unsolvable
 }
-
-
-// // Device function to find the next empty cell
-// __device__ bool find_empty(int *board, int *row, int *col) {
-//     int min_domain_size = 10; // Start with a value greater than the max possible domain size (9)
-//     int best_row = -1;
-//     int best_col = -1;
-
-//     // Iterate over all cells
-//     for (int i = 0; i < 9; i++) {
-//         for (int j = 0; j < 9; j++) {
-//             int val = board[i * 9 + j];
-//             if (val == 0) {
-//                 // Empty cell, count possibilities
-//                 int domain_size = 0;
-//                 for (int num = 1; num <= 9; num++) {
-//                     // Check if placing 'num' is valid
-//                     bool can_place = true;
-//                     // Row check
-//                     for (int x = 0; x < 9; x++) {
-//                         if (board[i * 9 + x] == num) {
-//                             can_place = false;
-//                             break;
-//                         }
-//                     }
-//                     if (!can_place) continue;
-
-//                     // Column check
-//                     for (int x = 0; x < 9; x++) {
-//                         if (board[x * 9 + j] == num) {
-//                             can_place = false;
-//                             break;
-//                         }
-//                     }
-//                     if (!can_place) continue;
-
-//                     // 3x3 box check
-//                     int box_row_start = (i / 3) * 3;
-//                     int box_col_start = (j / 3) * 3;
-//                     for (int rr = box_row_start; rr < box_row_start + 3 && can_place; rr++) {
-//                         for (int cc = box_col_start; cc < box_col_start + 3; cc++) {
-//                             if (board[rr * 9 + cc] == num) {
-//                                 can_place = false;
-//                                 break;
-//                             }
-//                         }
-//                     }
-
-//                     if (can_place) domain_size++;
-//                     if (domain_size > 1 && domain_size >= min_domain_size) {
-//                         // If domain_size already exceeds current min_domain_size (or is >1 and min_domain_size=1)
-//                         // no need to check further for this cell
-//                         break;
-//                     }
-//                 }
-
-//                 // If domain_size < min_domain_size, update
-//                 if (domain_size < min_domain_size) {
-//                     min_domain_size = domain_size;
-//                     best_row = i;
-//                     best_col = j;
-//                     // If domain_size == 1, return immediately
-//                     if (domain_size == 1) {
-//                         *row = best_row;
-//                         *col = best_col;
-//                         return true;
-//                     }
-//                 }
-//             }
-//         }
-//     }
-
-//     // If no empty cells found, puzzle is solved
-//     if (best_row == -1 && best_col == -1) {
-//         return false; 
-//     }
-
-//     // Return the cell with minimal domain size found
-//     *row = best_row;
-//     *col = best_col;
-//     return true;
-// }
-
-// // Explicit backtracking implementation for solving Sudoku
-// __device__ bool solve(int *board) {
-//     int stack[GRID_SIZE][2];
-//     int top = -1;
-//     int row, col;
-
-//     if (!find_empty(board, &row, &col)) {
-//         return true; // No empty cells, puzzle solved
-//     }
-
-//     stack[++top][0] = row;
-//     stack[top][1] = col;
-
-//     while (top >= 0) {
-//         row = stack[top][0];
-//         col = stack[top][1];
-
-//         bool placed = false;
-//         for (int num = board[row * 9 + col] + 1; num <= 9; num++) {
-//             if (is_valid(board, row, col, num)) {
-//                 board[row * 9 + col] = num;
-//                 placed = true;
-//                 break;
-//             }
-//         }
-
-//         if (placed) {
-//             if (find_empty(board, &row, &col)) {
-//                 stack[++top][0] = row;
-//                 stack[top][1] = col;
-//             } else {
-//                 return true; // Solved
-//             }
-//         } else {
-//             board[stack[top][0] * 9 + stack[top][1]] = 0; // Reset cell
-//             top--; // Backtrack
-//         }
-//     }
-
-//     return false; // Unsolvable
-// }
 
 // Host function to check if board is valid
 __device__ bool is_board_valid(int *board) {
@@ -479,12 +310,12 @@ void print_board(int *board) {
     }
 }
 
-#define NUM_BOARDS 95
+#define NUM_BOARDS 190
 
 #include <stdio.h>
 #include <stdlib.h>
 
-#define NUM_BOARDS 95
+#define NUM_BOARDS 190
 #define GRID_SIZE 81
 
 void read_sudoku_boards(const char *filename, int boards[NUM_BOARDS][GRID_SIZE]) {
@@ -567,9 +398,64 @@ void save_sudoku_boards(const char *filename, int boards[NUM_BOARDS][GRID_SIZE])
     fclose(file);
 }
 
+void initialize_possibilities_host(int *board, int *possibilities_per_cell) {
+    for (int i = 0; i < 9; i++) {
+        for (int j = 0; j < 9; j++) {
+            int cell_value = board[i * 9 + j];
+            if (cell_value != 0) {
+                // Mark filled cells with -1
+                possibilities_per_cell[i * 9 + j] = -1;
+            } else {
+                // Count possible values for empty cells
+                int domain_size = 0;
+                for (int num = 1; num <= 9; num++) {
+                    bool can_place = true;
+
+                    // Row check
+                    for (int x = 0; x < 9; x++) {
+                        if (board[i * 9 + x] == num) {
+                            can_place = false;
+                            break;
+                        }
+                    }
+                    if (!can_place) continue;
+
+                    // Column check
+                    for (int x = 0; x < 9; x++) {
+                        if (board[x * 9 + j] == num) {
+                            can_place = false;
+                            break;
+                        }
+                    }
+                    if (!can_place) continue;
+
+                    // 3x3 box check
+                    int box_row_start = (i / 3) * 3;
+                    int box_col_start = (j / 3) * 3;
+                    for (int rr = box_row_start; rr < box_row_start + 3 && can_place; rr++) {
+                        for (int cc = box_col_start; cc < box_col_start + 3; cc++) {
+                            if (board[rr * 9 + cc] == num) {
+                                can_place = false;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (can_place) {
+                        domain_size++;
+                    }
+                }
+
+                // Assign the domain size to the possibilities array
+                possibilities_per_cell[i * 9 + j] = domain_size;
+            }
+        }
+    }
+}
+
 // Host code for managing CUDA memory and invoking the kernel
 int main() {
-    const int num_boards = 95;
+    const int num_boards = 190;
 
     // Statically declared array for NUM_BOARDS boards
     int boards[NUM_BOARDS][GRID_SIZE];
@@ -578,10 +464,15 @@ int main() {
     read_sudoku_boards("inp.in", boards);
 
     // Print the solved boards
-    for(int i = 0; i < num_boards; i++) {
-        printf("Unsolved Board %d:\n", i);
-        print_board(boards[i]);
-    }
+    // for(int i = 0; i < num_boards; i++) {
+    //     printf("Unsolved Board %d:\n", i);
+    //     print_board(boards[i]);
+    // }
+    int possibilities_per_cell[GRID_SIZE];
+
+    initialize_possibilities_host(boards[1], possibilities_per_cell);
+    print_board(boards[1]);
+    print_board(possibilities_per_cell);
 
     int *d_boards;
     size_t size = num_boards * GRID_SIZE * sizeof(int);
@@ -599,10 +490,10 @@ int main() {
     cudaMemcpy(boards, d_boards, size, cudaMemcpyDeviceToHost);
 
     // Print the solved boards
-    for(int i = 0; i < num_boards; i++) {
-        printf("Solved Board %d:\n", i);
-        print_board(boards[i]);
-    }
+    // for(int i = 0; i < num_boards; i++) {
+    //     printf("Solved Board %d:\n", i);
+    //     print_board(boards[i]);
+    // }
 
     // Save boards to file
     save_sudoku_boards("sol.out", boards);
